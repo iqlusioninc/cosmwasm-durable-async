@@ -4,17 +4,16 @@ This example performs **no payments or shipments**. An owner-operated test servi
 
 ## Quickstart
 
-Run native `wasmd` v0.55.1 (CosmWasm VM 2.2.4) and Python 3.10+ on macOS or Linux. Use Wasm artifacts normalized for CosmWasm VM 2.x; raw artifacts from recent Rust compilers may use unsupported Wasm instructions. Build both contracts using the VM validation lane's `scripts/build-wasm.sh` when available, or:
+Run native `wasmd` v0.55.1 (CosmWasm VM 2.2.4) and Python 3.10+ on macOS or Linux. Use Wasm artifacts normalized for CosmWasm VM 2.x; raw artifacts from recent Rust compilers may use unsupported Wasm instructions. Build both contracts using `scripts/build-wasm.sh fulfill-example demo-service` when the parallel VM validation changes are available, then use `--artifacts target/artifacts`. The equivalent standalone recipe below uses Rust 1.99.0 and Binaryen 123:
 
 ```sh
-rustup toolchain install 1.85.1 --target wasm32-unknown-unknown
-RUSTFLAGS='-C target-feature=-reference-types,-multivalue,-bulk-memory' \
-  cargo +1.85.1 build --locked --release --target wasm32-unknown-unknown \
-  --target-dir target/wasm-compatible -p fulfill-example -p demo-service
+rustup toolchain install 1.99.0 --target wasm32-unknown-unknown
+cargo +1.99.0 build --locked --release --target wasm32-unknown-unknown \
+  --target-dir target/wasm-current -p fulfill-example -p demo-service
 mkdir -p target/demo-artifacts
 # wasm-opt is Binaryen version 123. Lower and normalize both artifacts.
 for contract in fulfill_example demo_service; do
-  wasm-opt "target/wasm-compatible/wasm32-unknown-unknown/release/$contract.wasm" \
+  wasm-opt "target/wasm-current/wasm32-unknown-unknown/release/$contract.wasm" \
     -Oz --enable-bulk-memory --enable-reference-types --llvm-memory-copy-fill-lowering \
     -o "target/demo-artifacts/$contract.wasm"
 done
@@ -28,7 +27,7 @@ The script stores and instantiates both Wasm contracts, binds the service once, 
 
 * Payment and shipment callbacks complete a workflow in separate transactions.
 * A remote application error produces terminal `Failed` despite transaction success.
-* A low-gas delivery transaction fails with code 11 and leaves the queue and checkpoint unchanged.
+* A low-gas delivery transaction fails with code 11 and leaves the queue and checkpoint unchanged. The observed depletion occurs while loading Wasm, so this does not establish mid-segment gas-exhaustion rollback.
 * Malformed callback bytes fail the transaction; the service queue and workflow checkpoint survive. A later valid delivery completes the same workflow.
 * Height expiration produces terminal failure, followed by verified stale-request cleanup.
 * Every driver invocation is a fresh process: recovery uses chain queries and a transaction journal.
