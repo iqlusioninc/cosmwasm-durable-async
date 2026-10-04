@@ -23,6 +23,124 @@ async fn fulfill(ctx: WorkflowCtx, order: Order) -> Result<Receipt, WorkflowErro
 
 The complete function, operation adapters, and contract entry points are in [the example contract](contracts/fulfill/src/lib.rs). The attribute replaces the function with a `fulfill` module exporting `Input` and `Workflow`; a call to `durable_runtime::start::<fulfill::Workflow>` starts an instance. There is no native future to call or poll.
 
+## Why there is no Rust future executor
+
+The `async fn` syntax looks like ordinary Rust async, but `#[durable_workflow]`
+replaces the function before Rust lowers it into a native future. The macro
+emits a serializable continuation enum and ordinary synchronous start/resume
+handlers. There is no generated `Future` to poll.
+
+Ordinary Rust async produces a `Future` whose `poll()` method advances execution.
+An executor polls it and uses wake notifications to decide when to poll again.
+Here, suspension instead saves the next step and the explicitly checkpointed
+values in contract storage, then ends the invocation. A later contract invocation
+loads that data and executes the next handler.
+
+For example, the payment wait above becomes conceptually:
+
+```text
+start(order):
+    save WaitingForPayment { order }
+    dispatch payment request
+    return
+
+resume(payment_result):
+    restore order from WaitingForPayment
+    handle payment_result
+    run the next segment until another wait or completion
+    save the next continuation or terminal outcome
+    return
+```
+
+This is pseudocode for the transformation, not a second public API. No Wasm stack,
+waker, or native future survives between invocations. Only serialized contract
+state survives; each invocation executes ordinary synchronous code in the chain's
+Wasm runtime.
+
+Scheduling is still necessary. In the execute-based example, a service or relayer
+submits a callback transaction; the durable runtime authenticates it and dispatches
+the saved continuation. An IBC adapter can instead resume from a chain-delivered
+acknowledgement or timeout. The library does not run a background scheduler: if no
+callback or expiration transaction arrives, the workflow remains suspended.
+
+| Responsibility | Component |
+| --- | --- |
+| Remember where execution stopped | Checkpoint and continuation tag in contract storage |
+| Trigger another invocation | Service callback transaction, adapter callback, or explicit expiration |
+| Validate the event and select the next segment | `durable-runtime` |
+| Execute the synchronous segment | CosmWasm VM, inside the transaction |
+
+A segment's writes and outbound messages share its transaction's commit/rollback
+boundary. The full workflow spans transactions: a later failure does not undo
+earlier committed effects.
+
+This is why the supported awaits are restricted to our typed durable operations.
+An arbitrary Rust future, such as an async network client or Tokio timer, has no
+adapter-defined callback and serializable continuation in this system.
+
+## Errors, retries, and timeouts
+
+An operation failure and an invocation failure have different consequences.
+A valid remote error becomes `Err(WaitError::Remote { code, message })` at the
+await. A deadline expiration becomes `Err(WaitError::Timeout)`.
+
+With `.await?`, the error is converted into the workflow's application error and
+stored as terminal `Failed`. Without `?`, application code receives the result
+and can handle it explicitly. For example, using application-defined operation,
+request and helper types:
+
+```rust
+let result: Result<Payment, WaitError> = ctx
+    .wait::<PaymentReceived>(request)
+    .checkpoint(order)
+    .await;
+
+handle_payment_result(ctx, order, result)
+```
+
+The synchronous helper can distinguish payment failure from timeout. Recovery
+requiring another durable wait must follow the supported straight-line workflow
+syntax; arbitrary branching around awaits is not supported.
+
+A terminal application failure is persisted through a successful invocation.
+Storage writes made earlier in that segment commit alongside `Failed`, provided
+the enclosing transaction or receipt succeeds. An application error is therefore
+not a request to roll back the segment. Earlier committed remote effects are not
+undone either.
+
+### Invocation failure and retry
+
+An unauthorized, stale, malformed or oversized callback is rejected without
+advancing the wait. A panic, gas exhaustion, runtime error or failing ordinary
+outbound message aborts the transaction, restoring the previous continuation and
+rolling back that transaction's application writes. Contract entry points must propagate
+runtime errors for this rollback guarantee to hold.
+
+After a failed resume transaction, the service can resubmit a valid authenticated
+callback for the same wait before its deadline. This retries local continuation
+execution; it does not require repeating the remote operation. There is no
+automatic retry scheduler, and a committed terminal `Failed` is not a retryable
+waiting state.
+
+### Deadlines and late results
+
+The operation adapter sets a finite block-height or timestamp deadline. Callback
+acceptance is strictly before that deadline; at or after it, anyone can submit
+`Expire { workflow_id, wait_sequence }`. Expiration executes the continuation with
+`WaitError::Timeout` and can itself fail and roll back like any other resume.
+Someone must submit the transaction: the runtime has no background timer.
+
+The committed wait sequence prevents duplicate or stale callbacks and expiration
+calls from advancing a consumed wait. A late result cannot revive a terminal
+workflow. IBC adapters must define how packet acknowledgements and protocol
+timeouts map onto this local deadline; a packet timeout must not bypass the
+runtime's deadline checks.
+
+Expiration does not cancel a remote action, prove that it never happened, or
+refund funds automatically. An action may already have completed when its result
+arrives too late. Applications needing reconciliation or remote-operation retries
+must define operation IDs, idempotency, status queries and compensation explicitly.
+
 ## Run the prototype
 
 Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm target, rustfmt, and clippy. The pinned compiler also makes compile-failure snapshots reproducible. Then run:
@@ -31,10 +149,12 @@ Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm 
 cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p fulfill-example --release --target wasm32-unknown-unknown --locked
+rustup toolchain install 1.85.1 --profile minimal --component clippy
+scripts/install-binaryen.sh
+scripts/check-wasm.sh
 ```
 
-The Wasm artifact is `target/wasm32-unknown-unknown/release/fulfill_example.wasm`. A successful build alone does not establish compatibility with a particular chain's VM; validate the artifact and gas behavior against that chain before deployment. Dependencies are locked to CosmWasm 2.x and cw-multi-test 2.x in `Cargo.lock`.
+The checked Wasm artifact is `target/artifacts/fulfill_example.wasm`, with a SHA-256 sidecar. The build uses pinned Binaryen 123 to normalize modern Rust output for the CosmWasm 2.2 VM. The [compiled-Wasm validation guide](docs/wasm-validation.md) describes the five gas-metered VM tests, tooling, and evidence limits. Validate against the intended chain before deployment. Dependencies are locked to CosmWasm 2.x and cw-multi-test 2.x in `Cargo.lock`.
 
 The workspace contains:
 
@@ -90,4 +210,4 @@ There is no background executor, exactly-once off-chain delivery, automatic comp
 
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
-Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The prototype has no production IBC adapter, external scheduler, or gas-metered VM test suite. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
+Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The compiled-Wasm suite additionally verifies lifecycle execution and gas exhaustion in CosmWasm VM 2.2.2 with mock host dependencies. It does not supply chain transaction rollback or dispatch outbound messages. The prototype has no production IBC adapter or external scheduler. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
