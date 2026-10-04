@@ -78,6 +78,69 @@ This is why the supported awaits are restricted to our typed durable operations.
 An arbitrary Rust future, such as an async network client or Tokio timer, has no
 adapter-defined callback and serializable continuation in this system.
 
+## Errors, retries, and timeouts
+
+An operation failure and an invocation failure have different consequences.
+A valid remote error becomes `Err(WaitError::Remote { code, message })` at the
+await. A deadline expiration becomes `Err(WaitError::Timeout)`.
+
+With `.await?`, the error is converted into the workflow's application error and
+stored as terminal `Failed`. Without `?`, application code receives the result
+and can handle it explicitly. For example, using application-defined operation,
+request and helper types:
+
+```rust
+let result: Result<Payment, WaitError> = ctx
+    .wait::<PaymentReceived>(request)
+    .checkpoint(order)
+    .await;
+
+handle_payment_result(ctx, order, result)
+```
+
+The synchronous helper can distinguish payment failure from timeout. Recovery
+requiring another durable wait must follow the supported straight-line workflow
+syntax; arbitrary branching around awaits is not supported.
+
+A terminal application failure is persisted through a successful invocation.
+Storage writes made earlier in that segment commit alongside `Failed`, provided
+the enclosing transaction or receipt succeeds. An application error is therefore
+not a request to roll back the segment. Earlier committed remote effects are not
+undone either.
+
+### Invocation failure and retry
+
+An unauthorized, stale, malformed or oversized callback is rejected without
+advancing the wait. A panic, gas exhaustion, runtime error or failing ordinary
+outbound message aborts the transaction, restoring the previous continuation and
+rolling back that transaction's application writes. Contract entry points must propagate
+runtime errors for this rollback guarantee to hold.
+
+After a failed resume transaction, the service can resubmit a valid authenticated
+callback for the same wait before its deadline. This retries local continuation
+execution; it does not require repeating the remote operation. There is no
+automatic retry scheduler, and a committed terminal `Failed` is not a retryable
+waiting state.
+
+### Deadlines and late results
+
+The operation adapter sets a finite block-height or timestamp deadline. Callback
+acceptance is strictly before that deadline; at or after it, anyone can submit
+`Expire { workflow_id, wait_sequence }`. Expiration executes the continuation with
+`WaitError::Timeout` and can itself fail and roll back like any other resume.
+Someone must submit the transaction: the runtime has no background timer.
+
+The committed wait sequence prevents duplicate or stale callbacks and expiration
+calls from advancing a consumed wait. A late result cannot revive a terminal
+workflow. IBC adapters must define how packet acknowledgements and protocol
+timeouts map onto this local deadline; a packet timeout must not bypass the
+runtime's deadline checks.
+
+Expiration does not cancel a remote action, prove that it never happened, or
+refund funds automatically. An action may already have completed when its result
+arrives too late. Applications needing reconciliation or remote-operation retries
+must define operation IDs, idempotency, status queries and compensation explicitly.
+
 ## Run the prototype
 
 Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm target, rustfmt, and clippy. The pinned compiler also makes compile-failure snapshots reproducible. Then run:
