@@ -23,6 +23,61 @@ async fn fulfill(ctx: WorkflowCtx, order: Order) -> Result<Receipt, WorkflowErro
 
 The complete function, operation adapters, and contract entry points are in [the example contract](contracts/fulfill/src/lib.rs). The attribute replaces the function with a `fulfill` module exporting `Input` and `Workflow`; a call to `durable_runtime::start::<fulfill::Workflow>` starts an instance. There is no native future to call or poll.
 
+## Why there is no Rust future executor
+
+The `async fn` syntax looks like ordinary Rust async, but `#[durable_workflow]`
+replaces the function before Rust lowers it into a native future. The macro
+emits a serializable continuation enum and ordinary synchronous start/resume
+handlers. There is no generated `Future` to poll.
+
+Ordinary Rust async produces a `Future` whose `poll()` method advances execution.
+An executor polls it and uses wake notifications to decide when to poll again.
+Here, suspension instead saves the next step and the explicitly checkpointed
+values in contract storage, then ends the invocation. A later contract invocation
+loads that data and executes the next handler.
+
+For example, the payment wait above becomes conceptually:
+
+```text
+start(order):
+    save WaitingForPayment { order }
+    dispatch payment request
+    return
+
+resume(payment_result):
+    restore order from WaitingForPayment
+    handle payment_result
+    run the next segment until another wait or completion
+    save the next continuation or terminal outcome
+    return
+```
+
+This is pseudocode for the transformation, not a second public API. No Wasm stack,
+waker, or native future survives between invocations. Only serialized contract
+state survives; each invocation executes ordinary synchronous code in the chain's
+Wasm runtime.
+
+Scheduling is still necessary. In the execute-based example, a service or relayer
+submits a callback transaction; the durable runtime authenticates it and dispatches
+the saved continuation. An IBC adapter can instead resume from a chain-delivered
+acknowledgement or timeout. The library does not run a background scheduler: if no
+callback or expiration transaction arrives, the workflow remains suspended.
+
+| Responsibility | Component |
+| --- | --- |
+| Remember where execution stopped | Checkpoint and continuation tag in contract storage |
+| Trigger another invocation | Service callback transaction, adapter callback, or explicit expiration |
+| Validate the event and select the next segment | `durable-runtime` |
+| Execute the synchronous segment | CosmWasm VM, inside the transaction |
+
+A segment's writes and outbound messages share its transaction's commit/rollback
+boundary. The full workflow spans transactions: a later failure does not undo
+earlier committed effects.
+
+This is why the supported awaits are restricted to our typed durable operations.
+An arbitrary Rust future, such as an async network client or Tokio timer, has no
+adapter-defined callback and serializable continuation in this system.
+
 ## Run the prototype
 
 Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm target, rustfmt, and clippy. The pinned compiler also makes compile-failure snapshots reproducible. Then run:
