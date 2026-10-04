@@ -1,0 +1,18 @@
+[package]
+name = "demo-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-std.workspace = true
+serde.workspace = true
+durable-runtime.workspace = true
+cw-storage-plus = "2"
+
+[dev-dependencies]
+fulfill-example = { path = "../fulfill" }
+cw-multi-test = "2.5"
