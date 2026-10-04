@@ -3,6 +3,7 @@
 Run from the repository root:
 
 ```sh
+rustup toolchain install 1.85.1 --profile minimal --component clippy
 scripts/install-binaryen.sh
 scripts/check-wasm.sh
 ```
@@ -14,7 +15,10 @@ an existing Binaryen 123 executable.
 
 `check-wasm.sh` builds with the repository's Rust **1.99.0**, normalizes the
 artifact, applies the compatibility validator used by **cosmwasm-check 2.2.2**,
-and executes it using **cosmwasm-vm 2.2.2 / Wasmer 4.3.7**. The host harness has a
+and executes it using **cosmwasm-vm 2.2.2 / Wasmer 4.3.7**. The native host
+harness uses Rust **1.85.1** because Wasmer 4.3.7 on Linux x86_64 references
+`__rust_probestack`, which is absent from newer Rust toolchains. This does not
+change the contract compiler or artifact. The host harness has a
 separate committed lockfile at `tools/vm-tests/Cargo.lock`; its large native VM
 dependencies are excluded from contract builds. CI performs these checks and
 uploads the checked artifact and checksum.

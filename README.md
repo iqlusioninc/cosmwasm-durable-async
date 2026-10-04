@@ -31,6 +31,7 @@ Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm 
 cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+rustup toolchain install 1.85.1 --profile minimal --component clippy
 scripts/install-binaryen.sh
 scripts/check-wasm.sh
 ```
