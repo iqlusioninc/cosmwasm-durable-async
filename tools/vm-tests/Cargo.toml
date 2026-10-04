@@ -8,6 +8,6 @@ publish = false
 [workspace]
 
 [dependencies]
-cosmwasm-vm = "=2.2.2"
+cosmwasm-vm = { version = "=2.2.2", features = ["stargate"] }
 cosmwasm-std = "=2.3.5"
 serde_json = "1"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/durable-runtime", "crates/durable-macro", "contracts/fulfill"]
+members = ["crates/durable-runtime", "crates/durable-macro", "contracts/fulfill", "contracts/ibc-query"]
 resolver = "2"
 
 [workspace.package]
