@@ -93,3 +93,10 @@ There is no background executor, exactly-once off-chain delivery, automatic comp
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
 Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The compiled-Wasm suite additionally verifies lifecycle execution and gas exhaustion in CosmWasm VM 2.2.2 with mock host dependencies. It does not supply chain transaction rollback or dispatch outbound messages. The prototype has no production IBC adapter or external scheduler. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
+
+### IBC durable waits
+
+The [IBC query example](docs/ibc-example.md) uses two real contract-side IBC
+acknowledgements to advance a two-wait workflow, with timeout/error handling,
+pinned channel trust, and a self-only callback bridge. See that document for the
+protocol, runnable fixture tests, and exact validation boundaries.

@@ -1,0 +1,24 @@
+{
+  "artifact_sha256": "e4bea19387c8971e3d7484f9c589d7c72a2039994d683481f872a86aa4c55116",
+  "wasmd": "0.55.1",
+  "hermes": "hermes 1.13.2+bab3b80",
+  "contracts": [
+    "wasm1h5ylyrmlcq2unu069pnwv07g0n5k6ha4arnwe52w874pu334pr5spddf5s",
+    "wasm1kgfskufr70k0308uapnrwwyjlfdntyg8nwyxsw005s3kxr2jn4xq8ht83c"
+  ],
+  "success": {
+    "Completed": {
+      "output": "MjA="
+    }
+  },
+  "remote_error": {
+    "Failed": {
+      "error": "eyJXYWl0Ijp7IlJlbW90ZSI6eyJjb2RlIjoib3ZlcmZsb3ciLCJtZXNzYWdlIjoicmVtb3RlIHF1ZXJ5IGZhaWxlZCJ9fX0="
+    }
+  },
+  "ibc_timeout": {
+    "Failed": {
+      "error": "eyJXYWl0IjoiVGltZW91dCJ9"
+    }
+  }
+}
