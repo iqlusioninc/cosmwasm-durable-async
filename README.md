@@ -31,10 +31,11 @@ Install rustup; `rust-toolchain.toml` selects Rust 1.99.0 and installs the Wasm 
 cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p fulfill-example --release --target wasm32-unknown-unknown --locked
+scripts/install-binaryen.sh
+scripts/check-wasm.sh
 ```
 
-The Wasm artifact is `target/wasm32-unknown-unknown/release/fulfill_example.wasm`. A successful build alone does not establish compatibility with a particular chain's VM; validate the artifact and gas behavior against that chain before deployment. Dependencies are locked to CosmWasm 2.x and cw-multi-test 2.x in `Cargo.lock`.
+The checked Wasm artifact is `target/artifacts/fulfill_example.wasm`, with a SHA-256 sidecar. The build uses pinned Binaryen 123 to normalize modern Rust output for the CosmWasm 2.2 VM. The [compiled-Wasm validation guide](docs/wasm-validation.md) describes the five gas-metered VM tests, tooling, and evidence limits. Validate against the intended chain before deployment. Dependencies are locked to CosmWasm 2.x and cw-multi-test 2.x in `Cargo.lock`.
 
 The workspace contains:
 
@@ -90,4 +91,4 @@ There is no background executor, exactly-once off-chain delivery, automatic comp
 
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
-Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The prototype has no production IBC adapter, external scheduler, or gas-metered VM test suite. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
+Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The compiled-Wasm suite additionally verifies lifecycle execution and gas exhaustion in CosmWasm VM 2.2.2 with mock host dependencies. It does not supply chain transaction rollback or dispatch outbound messages. The prototype has no production IBC adapter or external scheduler. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
