@@ -2,3 +2,6 @@
 /scratch/
 /shared/
 /library-files/
+
+/artifacts/
+**/__pycache__/

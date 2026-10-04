@@ -91,3 +91,10 @@ There is no background executor, exactly-once off-chain delivery, automatic comp
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
 Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The prototype has no production IBC adapter, external scheduler, or gas-metered VM test suite. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
+
+### Runnable delayed service example
+
+See [the local service quickstart](docs/service-demo.md) for a stored-request
+service, a restartable driver, and a fresh local `wasmd` chain demonstration of
+success, remote failure, callback transaction rollback/retry, and expiration.
+The example uses synthetic payment/shipment results and no real funds.

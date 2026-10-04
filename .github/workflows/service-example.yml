@@ -1,0 +1,16 @@
+name: Service example
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cargo test --locked -p demo-service
+      - run: python3 -m unittest discover -s scripts -p test_service_driver.py
