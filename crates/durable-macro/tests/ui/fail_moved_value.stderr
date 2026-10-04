@@ -1,0 +1,15 @@
+error[E0382]: use of moved value: `text`
+ --> tests/ui/fail_moved_value.rs:6:32
+  |
+6 | async fn bad(ctx: WorkflowCtx, text: String) -> Result<u32, WaitError> {
+  |                                ^^^^
+  |                                |
+  |                                value used here after move
+  |                                move occurs because `text` has type `String`, which does not implement the `Copy` trait
+7 |     let value: u32 = ctx.wait::<StringWait>(text).checkpoint(text).await?;
+  |                                             ---- value moved here
+  |
+help: consider cloning the value if the performance cost is acceptable
+  |
+7 |     let value: u32 = ctx.wait::<StringWait>(text.clone()).checkpoint(text).await?;
+  |                                                 ++++++++

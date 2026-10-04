@@ -1,0 +1,19 @@
+error: checkpoint and input types must be owned; references are not supported
+ --> tests/ui/fail_reference.rs:7:16
+  |
+7 |     let count: &u32 = &2u32;
+  |                ^^^^
+
+warning: unused import: `support::NumberWait`
+ --> tests/ui/fail_reference.rs:2:5
+  |
+2 | use support::NumberWait;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_reference.rs:4:23
+  |
+4 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^

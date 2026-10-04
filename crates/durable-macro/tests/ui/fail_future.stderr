@@ -1,0 +1,13 @@
+error: only ctx.wait::<Operation>(request).checkpoint(locals...).await is supported
+ --> tests/ui/fail_future.rs:5:22
+  |
+5 |     let value: u32 = std::future::ready(2).await;
+  |                      ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_future.rs:2:23
+  |
+2 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -1,0 +1,19 @@
+error: checkpoint requires a simple local declaration
+ --> tests/ui/fail_extra_destructured_checkpoint.rs:8:63
+  |
+8 |     let value: u32 = ctx.wait::<NumberWait>(count).checkpoint(count).await?;
+  |                                                               ^^^^^
+
+warning: unused import: `support::NumberWait`
+ --> tests/ui/fail_extra_destructured_checkpoint.rs:2:5
+  |
+2 | use support::NumberWait;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_extra_destructured_checkpoint.rs:4:23
+  |
+4 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^

@@ -1,0 +1,13 @@
+error: generic workflow functions are not supported
+ --> tests/ui/fail_generic.rs:4:13
+  |
+4 | async fn bad<T>(ctx: WorkflowCtx, value: T) -> Result<u32, WaitError> { Ok(1) }
+  |             ^^^
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_generic.rs:2:23
+  |
+2 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

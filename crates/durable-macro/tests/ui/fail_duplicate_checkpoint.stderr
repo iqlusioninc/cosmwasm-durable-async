@@ -1,0 +1,19 @@
+error: checkpoint identifiers must be unique
+ --> tests/ui/fail_duplicate_checkpoint.rs:7:70
+  |
+7 |     let value: u32 = ctx.wait::<NumberWait>(count).checkpoint(count, count).await?;
+  |                                                                      ^^^^^
+
+warning: unused import: `support::NumberWait`
+ --> tests/ui/fail_duplicate_checkpoint.rs:2:5
+  |
+2 | use support::NumberWait;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_duplicate_checkpoint.rs:4:23
+  |
+4 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^

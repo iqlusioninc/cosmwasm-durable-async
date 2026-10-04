@@ -1,0 +1,19 @@
+error: awaits inside macros are not supported
+ --> tests/ui/fail_extra_macro_await.rs:7:22
+  |
+7 |     let value: u32 = dbg!(ctx.wait::<NumberWait>(2).checkpoint().await?);
+  |                      ^^^
+
+warning: unused import: `support::NumberWait`
+ --> tests/ui/fail_extra_macro_await.rs:2:5
+  |
+2 | use support::NumberWait;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_extra_macro_await.rs:4:23
+  |
+4 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^

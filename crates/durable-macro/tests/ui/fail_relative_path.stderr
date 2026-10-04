@@ -1,0 +1,13 @@
+error: self:: and super:: paths are not supported inside a durable workflow; use crate:: or an imported name
+ --> tests/ui/fail_relative_path.rs:9:12
+  |
+9 |         Ok(super::number())
+  |            ^^^^^^^^^^^^^
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_relative_path.rs:5:27
+  |
+5 |     use durable_runtime::{WorkflowCtx, WaitError};
+  |                           ^^^^^^^^^^^  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

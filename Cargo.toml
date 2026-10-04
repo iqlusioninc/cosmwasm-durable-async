@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/durable-runtime", "crates/durable-macro", "contracts/fulfill"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+cosmwasm-std = "2.2"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+durable-runtime = { path = "crates/durable-runtime" }
+durable-macro = { path = "crates/durable-macro" }

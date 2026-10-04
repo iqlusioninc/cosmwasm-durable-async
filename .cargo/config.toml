@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+# CosmWasm 2.x declares its VM host functions as undefined C symbols.
+# Import them from env rather than requiring a native definition at link time.
+rustflags = ["-C", "link-arg=--import-undefined"]

@@ -1,0 +1,13 @@
+error: Input and Workflow are reserved export names; use another local identifier
+ --> tests/ui/fail_reserved_nested_binding.rs:7:10
+  |
+7 |     Ok((|Input: fn() -> u32| Input())(|| 7))
+  |          ^^^^^
+
+warning: unused imports: `WaitError` and `WorkflowCtx`
+ --> tests/ui/fail_reserved_nested_binding.rs:2:23
+  |
+2 | use durable_runtime::{WorkflowCtx, WaitError};
+  |                       ^^^^^^^^^^^  ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

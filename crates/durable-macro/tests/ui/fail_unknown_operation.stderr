@@ -1,0 +1,5 @@
+error[E0425]: cannot find type `MissingOperation` in this scope
+ --> tests/ui/fail_unknown_operation.rs:5:33
+  |
+5 |     let value: u32 = ctx.wait::<MissingOperation>(2).checkpoint().await?;
+  |                                 ^^^^^^^^^^^^^^^^ not found in this scope
