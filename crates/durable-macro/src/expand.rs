@@ -28,6 +28,25 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
         state: &state_type,
     };
     let visibility = item.vis;
+    let workflow_visibility = match &visibility {
+        syn::Visibility::Inherited => quote!(pub(super)),
+        syn::Visibility::Public(_) => quote!(pub),
+        syn::Visibility::Restricted(restricted) => {
+            let mut path = (*restricted.path).clone();
+            if path.is_ident("self") {
+                quote!(pub(super))
+            } else {
+                if path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| segment.ident == "super")
+                {
+                    path.segments.insert(0, syn::parse_quote!(super));
+                }
+                quote!(pub(in #path))
+            }
+        }
+    };
     let attributes = item.attrs;
     let input_fields = inputs.iter().map(|binding| {
         let ident = &binding.ident;
@@ -43,7 +62,12 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
             let ty = &binding.ty;
             quote!(#ident: #ty)
         });
-        quote!(#variant { #(#fields),* })
+        if wait.child {
+            let child = child_ident(wait);
+            quote!(#variant { #(#fields,)* #child: ::durable_runtime::ChildContinuation })
+        } else {
+            quote!(#variant { #(#fields),* })
+        }
     });
     let binary_input = hidden("__durable_input");
     let binary_state = hidden("__durable_state");
@@ -87,6 +111,33 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
             #(#local_attributes)* let #local_pattern = #bound_value;
         };
         let body = if let Some(graph) = &flow { graph.execute(graph.resumes[index], prelude, &context, &waits, &variants, &types) } else { segment(&context, &segments[index + 1], prelude, waits.get(index + 1), variants.get(index + 1), &types) };
+        if wait.child {
+            let child = child_ident(wait);
+            let transition = hidden("__durable_transition");
+            let prepared = hidden("__durable_prepared");
+            let child_state = hidden("__durable_child_state");
+            let fields = wait.checkpoint.iter().enumerate().map(|(i, b)| {
+                let name = &b.ident;
+                let tmp = format_ident!("__durable_restored_{}", i, span = Span::mixed_site());
+                quote!(#name: #tmp)
+            });
+            return quote! {
+                #state_type::#variant { #(#restored,)* #child } => {
+                    #child.check::<#operation>()?;
+                    <#operation as ::durable_runtime::Workflow>::validate(&#child.state, &#resolution)?;
+                    let #transition = <#operation as ::durable_runtime::Workflow>::resume(#context, #child.state, #resolution)?;
+                    if let ::durable_runtime::Transition::Wait { state: #child_state, wait: #prepared } = #transition {
+                        let #child = ::durable_runtime::ChildContinuation::new::<#operation>(#child_state);
+                        return ::core::result::Result::Ok(::durable_runtime::Transition::Wait {
+                            state: ::durable_runtime::cosmwasm_std::to_json_binary(&#state_type::#variant { #(#fields,)* #child })?,
+                            wait: #prepared,
+                        });
+                    }
+                    let #awaited_value = ::durable_runtime::decode_child_result::<#operation>(#transition)?;
+                    #body
+                }
+            };
+        }
         quote! {
             #state_type::#variant { #(#restored),* } => {
                 let #awaited_value = ::durable_runtime::decode_resolution::<#operation>(#resolution)?;
@@ -96,11 +147,23 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
     });
     let validation_arms = waits.iter().zip(&variants).map(|(wait, variant)| {
         let operation = &wait.operation;
+        if wait.child {
+            let child = child_ident(wait);
+            return quote! { #state_type::#variant { #child, .. } => { #child.check::<#operation>()?; <#operation as ::durable_runtime::Workflow>::validate(&#child.state, #resolution) } };
+        }
         quote! { #state_type::#variant { .. } => { let _ = ::durable_runtime::decode_resolution::<#operation>(#resolution.clone())?; ::core::result::Result::Ok(()) } }
     });
     let operation_arms = waits.iter().zip(&variants).map(|(wait, variant)| {
         let operation = &wait.operation;
+        if wait.child {
+            let child = child_ident(wait);
+            return quote! { #state_type::#variant { #child, .. } => { #child.check::<#operation>()?; <#operation as ::durable_runtime::Workflow>::operation(&#child.state) } };
+        }
         quote! { #state_type::#variant { .. } => ::core::result::Result::Ok(<#operation as ::durable_runtime::Operation>::KIND) }
+    });
+    let depths = waits.iter().filter(|w| w.child).map(|w| {
+        let child = &w.operation;
+        quote! { let child_depth = <#child as ::durable_runtime::TypedWorkflow>::COMPOSITION_DEPTH + 1; if child_depth > depth { depth = child_depth; } }
     });
     quote! {
         #(#attributes)*
@@ -116,7 +179,19 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
             #[serde(crate = "::durable_runtime::serde")]
             enum #state_type { #(#state_variants),* }
 
-            pub struct Workflow;
+            #workflow_visibility struct Workflow;
+
+            impl ::durable_runtime::TypedWorkflow for Workflow {
+                type Output = #output;
+                type Error = #error;
+                const COMPOSITION_DEPTH: usize = {
+                    #[allow(unused_mut)] let mut depth = 0;
+                    #(#depths)*
+                    assert!(depth <= 16, "durable helper composition exceeds maximum depth 16");
+                    depth
+                };
+            }
+            const _: usize = <Workflow as ::durable_runtime::TypedWorkflow>::COMPOSITION_DEPTH;
 
             impl ::durable_runtime::Workflow for Workflow {
                 const KIND: &'static str = #kind;
@@ -158,6 +233,14 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
 
 fn hidden(name: &str) -> syn::Ident {
     syn::Ident::new(name, Span::mixed_site())
+}
+
+pub(crate) fn child_ident(wait: &Wait) -> syn::Ident {
+    let mut name = "__durable_child".to_owned();
+    while wait.checkpoint.iter().any(|binding| binding.ident == name) {
+        name.push('_');
+    }
+    hidden(&name)
 }
 
 pub(crate) fn state_ident(function: &syn::Ident) -> syn::Ident {

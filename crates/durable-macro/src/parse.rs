@@ -18,6 +18,7 @@ pub(crate) struct Binding {
 }
 
 pub(crate) struct Wait {
+    pub child: bool,
     pub operation: Type,
     pub request: Expr,
     pub checkpoint: Vec<Binding>,
@@ -172,7 +173,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
             }
             if let Some((awaited, propagate)) = direct_await(local) {
                 simple_pattern(&local.pat)?;
-                let (operation, request, names) = wait_expression(&awaited.base, &context)?;
+                let (operation, request, names, child) = wait_expression(&awaited.base, &context)?;
                 restricted_expression(&request)?;
                 check_omitted_expression(&request, &omitted)?;
                 let mut checkpoint = Vec::new();
@@ -245,6 +246,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
                 record_local(local, &mut locals);
                 waits.push(Wait {
                     operation,
+                    child,
                     request,
                     checkpoint,
                     local: local.clone(),
@@ -592,7 +594,7 @@ pub(crate) fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
 pub(crate) fn wait_expression(
     expression: &Expr,
     context: &Ident,
-) -> syn::Result<(Type, Expr, Vec<Ident>)> {
+) -> syn::Result<(Type, Expr, Vec<Ident>, bool)> {
     let invalid = || {
         syn::Error::new_spanned(
             expression,
@@ -608,7 +610,7 @@ pub(crate) fn wait_expression(
     let Expr::MethodCall(wait) = checkpoint.receiver.as_ref() else {
         return Err(invalid());
     };
-    if wait.method != "wait" || wait.args.len() != 1 {
+    if (wait.method != "wait" && wait.method != "call") || wait.args.len() != 1 {
         return Err(invalid());
     }
     if !matches!(wait.receiver.as_ref(), Expr::Path(path) if path.path.is_ident(context)) {
@@ -636,7 +638,12 @@ pub(crate) fn wait_expression(
             "checkpoint accepts only local identifiers",
         ));
     }
-    Ok((operation.clone(), wait.args.first().unwrap().clone(), names))
+    Ok((
+        operation.clone(),
+        wait.args.first().unwrap().clone(),
+        names,
+        wait.method == "call",
+    ))
 }
 
 pub(crate) fn owned_type(ty: &Type) -> syn::Result<()> {

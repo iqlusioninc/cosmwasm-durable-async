@@ -112,6 +112,10 @@ pub(crate) fn needed(block: &syn::Block) -> bool {
         found: bool,
     }
     impl<'a> Visit<'a> for Detect {
+        fn visit_expr_method_call(&mut self, e: &'a syn::ExprMethodCall) {
+            self.found |= e.method == "call";
+            visit::visit_expr_method_call(self, e);
+        }
         fn visit_expr_if(&mut self, e: &'a syn::ExprIf) {
             self.depth += 1;
             visit::visit_expr_if(self, e);
@@ -123,8 +127,9 @@ pub(crate) fn needed(block: &syn::Block) -> bool {
         fn visit_expr_while(&mut self, _: &'a syn::ExprWhile) {
             self.found = true;
         }
-        fn visit_expr_await(&mut self, _: &'a syn::ExprAwait) {
+        fn visit_expr_await(&mut self, e: &'a syn::ExprAwait) {
             self.found |= self.depth > 0;
+            visit::visit_expr_await(self, e);
         }
     }
     let mut detect = Detect {
@@ -196,7 +201,7 @@ impl Builder<'_> {
             let rest = &statements[position + 1..];
             if let Stmt::Local(local) = statement {
                 if let Some((awaited, propagate)) = parse::direct_await(local) {
-                    let (operation, request, names) =
+                    let (operation, request, names, child) =
                         parse::wait_expression(&awaited.base, self.context)?;
                     scope.check(&request)?;
                     let mut unique = BTreeSet::new();
@@ -239,6 +244,7 @@ impl Builder<'_> {
                     let after = self.node(&scope);
                     let index = self.waits.len();
                     self.waits.push(Wait {
+                        child,
                         operation,
                         request,
                         checkpoint,
@@ -430,10 +436,14 @@ impl Graph {
             });
             quote!(#variant { #(#fields),* })
         });
-        let action_variants = waits.iter().zip(variants).map(|(wait, variant)| {
-            let operation = &wait.operation;
-            quote!(#variant(#state_type,<#operation as ::durable_runtime::Operation>::Request))
-        });
+        let action_variants = waits
+            .iter()
+            .zip(variants)
+            .filter(|(wait, _)| !wait.child)
+            .map(|(wait, variant)| {
+                let operation = &wait.operation;
+                quote!(#variant(#state_type,<#operation as ::durable_runtime::Operation>::Request))
+            });
         let arms = self.nodes.iter().enumerate().map(|(i, node)| {
             let variant = node_ident(i);
             let bindings = node.bindings.iter().map(|binding| {
@@ -458,13 +468,46 @@ impl Graph {
                     let operation = &wait.operation;
                     let expr = &wait.request;
                     let variant = &variants[*index];
-                    let names = wait.checkpoint.iter().map(|binding| &binding.ident);
+                    let names: Vec<_> = wait.checkpoint.iter().map(|binding| &binding.ident).collect();
+                    if wait.child {
+                        let child = crate::expand::child_ident(wait);
+                        let transition = hidden("__durable_transition");
+                        let awaited = hidden("__durable_awaited_value");
+                        let pattern = &wait.local.pat;
+                        let bound = if wait.propagate { quote!(#awaited?) } else { quote!(#awaited) };
+                        let edge = self.edge(self.resumes[*index]);
+                        quote! {
+                            let #request: <#operation as ::durable_runtime::Workflow>::Input = #expr;
+                            let #transition = (|| -> ::durable_runtime::RuntimeResult<_> {
+                                <#operation as ::durable_runtime::Workflow>::start(#context, ::durable_runtime::cosmwasm_std::to_json_binary(&#request)?)
+                            })();
+                            let #awaited: ::core::result::Result<<#operation as ::durable_runtime::TypedWorkflow>::Output, <#operation as ::durable_runtime::TypedWorkflow>::Error> = match #transition {
+                                ::core::result::Result::Err(#value) => return ::core::result::Result::Ok(#action::RuntimeError(#value)),
+                                ::core::result::Result::Ok(::durable_runtime::Transition::Wait { state: #state, wait: #prepared }) => {
+                                    let #child = ::durable_runtime::ChildContinuation::new::<#operation>(#state);
+                                    let #state = #state_type::#variant { #(#names,)* #child };
+                                    let #state = match ::durable_runtime::cosmwasm_std::to_json_binary(&#state) {
+                                        ::core::result::Result::Ok(#value) => #value,
+                                        ::core::result::Result::Err(#value) => return ::core::result::Result::Ok(#action::RuntimeError(#value.into())),
+                                    };
+                                    return ::core::result::Result::Ok(#action::Suspended(::durable_runtime::Transition::Wait { state: #state, wait: #prepared }));
+                                }
+                                ::core::result::Result::Ok(#transition) => match ::durable_runtime::decode_child_result::<#operation>(#transition) {
+                                    ::core::result::Result::Ok(#value) => #value,
+                                    ::core::result::Result::Err(#value) => return ::core::result::Result::Ok(#action::RuntimeError(#value)),
+                                }
+                            };
+                            let #pattern = #bound;
+                            #cursor = #edge;
+                        }
+                    } else {
                     quote! {
                         let #request: <#operation as ::durable_runtime::Operation>::Request = #expr;
                         return ::core::result::Result::Ok(#action::#variant(
                             #state_type::#variant { #(#names),* },
                             #request,
                         ));
+                    }
                     }
                 }
                 End::Complete => quote!(),
@@ -479,24 +522,28 @@ impl Graph {
             };
             quote!(#flow::#variant { #(#bindings),* } => { #body })
         });
-        let waiting = waits.iter().zip(variants).map(|(wait, variant)| {
-            let operation = &wait.operation;
-            quote! {
-                ::core::result::Result::Ok(#action::#variant(#state, #request)) => {
-                    let #prepared = #context.prepare::<#operation>(#request)?;
-                    ::core::result::Result::Ok(::durable_runtime::Transition::Wait {
-                        state: ::durable_runtime::cosmwasm_std::to_json_binary(&#state)?,
-                        wait: #prepared,
-                    })
+        let waiting = waits
+            .iter()
+            .zip(variants)
+            .filter(|(wait, _)| !wait.child)
+            .map(|(wait, variant)| {
+                let operation = &wait.operation;
+                quote! {
+                    ::core::result::Result::Ok(#action::#variant(#state, #request)) => {
+                        let #prepared = #context.prepare::<#operation>(#request)?;
+                        ::core::result::Result::Ok(::durable_runtime::Transition::Wait {
+                            state: ::durable_runtime::cosmwasm_std::to_json_binary(&#state)?,
+                            wait: #prepared,
+                        })
+                    }
                 }
-            }
-        });
+            });
         let initial = self.edge(entry);
         quote! {
             #[allow(non_camel_case_types)]
             enum #flow { #(#flow_variants),* }
             #[allow(non_camel_case_types)]
-            enum #action { Completed(#output), #(#action_variants),* }
+            enum #action { Completed(#output), RuntimeError(::durable_runtime::RuntimeError), Suspended(::durable_runtime::Transition), #(#action_variants),* }
             #[allow(unused_mut, unused_variables)]
             let #result: ::core::result::Result<#action, #error> = (|| {
                 #prelude
@@ -504,6 +551,8 @@ impl Graph {
                 loop { match #cursor { #(#arms),* } }
             })();
             match #result {
+                ::core::result::Result::Ok(#action::RuntimeError(#value)) => ::core::result::Result::Err(#value),
+                ::core::result::Result::Ok(#action::Suspended(#value)) => ::core::result::Result::Ok(#value),
                 ::core::result::Result::Ok(#action::Completed(#value)) => {
                     ::core::result::Result::Ok(::durable_runtime::Transition::Completed(
                         ::durable_runtime::cosmwasm_std::to_json_binary(&#value)?,

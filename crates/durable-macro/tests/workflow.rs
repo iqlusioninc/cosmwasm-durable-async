@@ -89,6 +89,324 @@ fn recover(result: Result<u32, WaitError>) -> u32 {
     result.unwrap_or(100)
 }
 
+#[durable_workflow(kind = "parent", version = 1)]
+async fn parent(ctx: WorkflowCtx, input: u32) -> Result<u32, AppError> {
+    let mut total: u32 = 10;
+    total += 1;
+    let child: u32 = ctx
+        .call::<arithmetic::Workflow>(arithmetic::Input { input })
+        .checkpoint(total)
+        .await?;
+    total += child;
+    let own: u32 = ctx.wait::<NumberWait>(total).checkpoint(total).await?;
+    Ok(total + own)
+}
+
+#[durable_workflow(kind = "immediate", version = 1)]
+async fn immediate(ctx: WorkflowCtx, input: u32) -> Result<u32, AppError> {
+    ensure(input)
+}
+
+#[durable_workflow(kind = "many_helpers", version = 1)]
+async fn many_helpers(ctx: WorkflowCtx, limit: u32) -> Result<u32, AppError> {
+    let mut total: u32 = 0;
+    while total < limit {
+        let next: u32 = ctx
+            .call::<immediate::Workflow>(immediate::Input { input: total + 1 })
+            .checkpoint(total, limit)
+            .await?;
+        total = next;
+    }
+    Ok(total)
+}
+
+#[test]
+fn child_two_waits_then_parent_wait_share_monotonic_host_sequence() {
+    let mut deps = mock_dependencies();
+    let env = environment();
+    let limits = Limits::default();
+    let registry = Registry::new(vec![runtime::registration::<parent::Workflow>()]).unwrap();
+    let (id, _) = runtime::start::<parent::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        parent::Input { input: 4 },
+        &limits,
+    )
+    .unwrap();
+    for (sequence, request, answer) in [(1, 4, 2u32), (2, 6, 3), (3, 20, 5)] {
+        match runtime::load_instance(&deps.storage, id).unwrap().status {
+            Status::Waiting { state, wait } => {
+                assert_eq!(from_json::<u32>(&wait.request).unwrap(), request);
+                assert_eq!(parent::Workflow::operation(&state).unwrap(), "number");
+                parent::Workflow::validate(
+                    &state,
+                    &Resolution::Outcome(Outcome::Success(to_json_binary(&answer).unwrap())),
+                )
+                .unwrap();
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        runtime::resume(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&env.contract.address, &[]),
+            id,
+            sequence,
+            Outcome::Success(to_json_binary(&answer).unwrap()),
+            &registry,
+            &limits,
+        )
+        .unwrap();
+    }
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(output).unwrap(), 25),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn immediate_helpers_loop_without_wait_or_recursive_parent_poll() {
+    let mut deps = mock_dependencies();
+    let (id, _) = runtime::start::<many_helpers::Workflow>(
+        deps.as_mut(),
+        environment(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        many_helpers::Input { limit: 100_000 },
+        &Limits::default(),
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(output).unwrap(), 100_000),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[durable_workflow(kind = "nested", version = 1)]
+async fn nested(ctx: WorkflowCtx, input: u32) -> Result<u32, AppError> {
+    let result: Result<u32, AppError> = ctx
+        .call::<parent::Workflow>(parent::Input { input })
+        .checkpoint()
+        .await;
+    Ok(result.unwrap_or(77))
+}
+
+#[test]
+fn nested_child_errors_can_be_handled_or_propagated_and_runtime_errors_escape() {
+    let mut deps = mock_dependencies();
+    let limits = Limits::default();
+    let info = message_info(&Addr::unchecked("creator"), &[]);
+    let (id, _) = runtime::start::<nested::Workflow>(
+        deps.as_mut(),
+        environment(),
+        info.clone(),
+        nested::Input { input: 0 },
+        &limits,
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(output).unwrap(), 77),
+        other => panic!("unexpected {other:?}"),
+    }
+    let (id, _) = runtime::start::<parent::Workflow>(
+        deps.as_mut(),
+        environment(),
+        info.clone(),
+        parent::Input { input: 0 },
+        &limits,
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Failed { error } => {
+            assert_eq!(from_json::<AppError>(error).unwrap(), AppError::Rejected)
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(matches!(
+        runtime::start::<nested::Workflow>(
+            deps.as_mut(),
+            environment(),
+            info,
+            nested::Input { input: 99 },
+            &limits
+        ),
+        Err(RuntimeError::Validation(_))
+    ));
+}
+
+#[test]
+fn nested_waits_validate_pinned_identity_and_malformed_child_state() {
+    let mut deps = mock_dependencies();
+    let env = environment();
+    let limits = Limits::default();
+    let registry = Registry::new(vec![runtime::registration::<nested::Workflow>()]).unwrap();
+    let (id, _) = runtime::start::<nested::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        nested::Input { input: 4 },
+        &limits,
+    )
+    .unwrap();
+    let state = match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Waiting { state, .. } => state,
+        other => panic!("{other:?}"),
+    };
+    let valid = Resolution::Outcome(Outcome::Success(to_json_binary(&2u32).unwrap()));
+    nested::Workflow::validate(&state, &valid).unwrap();
+    let json = String::from_utf8(state.to_vec()).unwrap();
+    for invalid in [
+        json.replace("\"parent\"", "\"other\""),
+        json.replace("\"version\":1", "\"version\":2"),
+        json.replace("\"state\":\"", "\"state\":\"AAAA"),
+    ] {
+        let invalid = cosmwasm_std::Binary::from(invalid.as_bytes());
+        assert!(nested::Workflow::validate(&invalid, &valid).is_err());
+        assert!(nested::Workflow::operation(&invalid).is_err());
+    }
+    assert!(nested::Workflow::validate(
+        &state,
+        &Resolution::Outcome(Outcome::Success(to_json_binary(&"bad").unwrap()))
+    )
+    .is_err());
+    for (sequence, answer) in [(1, 2u32), (2, 3), (3, 5)] {
+        runtime::resume(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&env.contract.address, &[]),
+            id,
+            sequence,
+            Outcome::Success(to_json_binary(&answer).unwrap()),
+            &registry,
+            &limits,
+        )
+        .unwrap();
+    }
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(output).unwrap(), 25),
+        other => panic!("{other:?}"),
+    }
+}
+
+struct MalformedChild;
+impl WorkflowTrait for MalformedChild {
+    const KIND: &'static str = "malformed";
+    const VERSION: u32 = 1;
+    type Input = bool;
+    fn start(
+        _: &mut WorkflowCtx<'_>,
+        input: cosmwasm_std::Binary,
+    ) -> RuntimeResult<runtime::Transition> {
+        let bad = to_json_binary(&"not a typed result")?;
+        if from_json::<bool>(input)? {
+            Ok(runtime::Transition::Completed(bad))
+        } else {
+            Ok(runtime::Transition::Failed(bad))
+        }
+    }
+    fn validate(_: &cosmwasm_std::Binary, _: &Resolution) -> RuntimeResult<()> {
+        Ok(())
+    }
+    fn operation(_: &cosmwasm_std::Binary) -> RuntimeResult<&'static str> {
+        Ok("unused")
+    }
+    fn resume(
+        ctx: &mut WorkflowCtx<'_>,
+        state: cosmwasm_std::Binary,
+        _: Resolution,
+    ) -> RuntimeResult<runtime::Transition> {
+        Self::start(ctx, state)
+    }
+}
+impl runtime::TypedWorkflow for MalformedChild {
+    type Output = u32;
+    type Error = AppError;
+    const COMPOSITION_DEPTH: usize = 0;
+}
+fn mark_effect(ctx: &mut WorkflowCtx<'_>) {
+    ctx.storage().set(b"parent-effect", b"ran");
+}
+#[durable_workflow(kind = "malformed_parent", version = 1)]
+async fn malformed_parent(ctx: WorkflowCtx, success: bool) -> Result<u32, AppError> {
+    let value: Result<u32, AppError> = ctx.call::<MalformedChild>(success).checkpoint().await;
+    mark_effect(ctx);
+    Ok(value.unwrap_or(77))
+}
+
+#[test]
+fn malformed_typed_child_terminal_results_never_reach_parent_effects() {
+    for success in [true, false] {
+        let mut deps = mock_dependencies();
+        assert!(runtime::start::<malformed_parent::Workflow>(
+            deps.as_mut(),
+            environment(),
+            message_info(&Addr::unchecked("creator"), &[]),
+            malformed_parent::Input { success },
+            &Limits::default()
+        )
+        .is_err());
+        assert_eq!(
+            cosmwasm_std::Storage::get(&deps.storage, b"parent-effect"),
+            None
+        );
+    }
+}
+
+#[test]
+fn suspended_child_failure_is_handled_and_preparation_failure_is_runtime_error() {
+    let mut deps = mock_dependencies();
+    let env = environment();
+    let limits = Limits::default();
+    let registry = Registry::new(vec![runtime::registration::<nested::Workflow>()]).unwrap();
+    let (id, _) = runtime::start::<nested::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        nested::Input { input: 4 },
+        &limits,
+    )
+    .unwrap();
+    assert!(runtime::resume(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&env.contract.address, &[]),
+        id,
+        1,
+        Outcome::Success(to_json_binary(&95u32).unwrap()),
+        &registry,
+        &limits
+    )
+    .is_err());
+    // MockStorage has no transaction rollback; use a fresh instance after the
+    // runtime error instead of pretending the failed invocation was rolled back.
+    let (id, _) = runtime::start::<nested::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        nested::Input { input: 4 },
+        &limits,
+    )
+    .unwrap();
+    runtime::resume(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&env.contract.address, &[]),
+        id,
+        1,
+        Outcome::Error {
+            code: "no".into(),
+            message: "declined".into(),
+        },
+        &registry,
+        &limits,
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(output).unwrap(), 77),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[durable_workflow(kind = "control_flow", version = 1)]
 async fn control_flow(ctx: WorkflowCtx, limit: u32) -> Result<u32, AppError> {
     let mut total: u32 = 0;
