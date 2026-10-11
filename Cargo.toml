@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/durable-runtime", "crates/durable-macro", "crates/native-async", "contracts/fulfill"]
+members = ["crates/durable-runtime", "crates/durable-macro", "crates/native-async", "contracts/fulfill", "contracts/native-fulfill"]
 resolver = "2"
 
 [workspace.package]

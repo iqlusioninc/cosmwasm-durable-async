@@ -492,6 +492,7 @@ name = "durable-runtime"
 version = "0.1.0"
 dependencies = [
  "cosmwasm-std",
+ "native-async",
  "serde",
  "thiserror 2.0.21",
 ]
@@ -742,6 +743,19 @@ dependencies = [
  "cw-multi-test",
  "schemars",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "native-fulfill-example"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "durable-macro",
+ "durable-runtime",
+ "native-async",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -5,6 +5,8 @@
 //! direct calls with `MockStorage` do not provide those semantics.
 
 mod context;
+#[cfg(feature = "native")]
+pub mod native;
 mod registry;
 mod runtime;
 mod types;
