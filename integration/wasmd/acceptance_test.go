@@ -26,12 +26,12 @@ type acceptanceQuietTB struct{ testing.TB }
 func (acceptanceQuietTB) Log(...any)          {}
 func (acceptanceQuietTB) Logf(string, ...any) {}
 
-func newFaultHarness(t *testing.T) *faultHarness {
+func newFaultHarness(t *testing.T, extra ...wasmkeeper.Option) *faultHarness {
 	t.Helper()
 	code, err := os.ReadFile("../../artifacts/native_fault.wasm")
 	require.NoError(t, err, "build the real fault fixture with build-fault-wasmd.sh")
 	k := &Keeper{Config: testConfig()}
-	ctx, keepers := wasmkeeper.CreateTestInput(acceptanceQuietTB{t}, false, wasmkeeper.BuiltInCapabilities(), k.Options()...)
+	ctx, keepers := wasmkeeper.CreateTestInput(acceptanceQuietTB{t}, false, wasmkeeper.BuiltInCapabilities(), append(extra, k.Options()...)...)
 	k.Key = keepers.WasmStoreKey
 	k.Bank = keepers.BankKeeper
 	k.Wasm = keepers.WasmKeeper

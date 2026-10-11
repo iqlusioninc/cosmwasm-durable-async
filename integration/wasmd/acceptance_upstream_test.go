@@ -45,7 +45,7 @@ type appHarness struct {
 	blockGas  []uint64
 }
 
-func openAcceptanceApp(t *testing.T, home string) (*wasmapp.WasmApp, func()) {
+func openAcceptanceApp(t *testing.T, home string, extra ...wasmkeeper.Option) (*wasmapp.WasmApp, func()) {
 	t.Helper()
 	db, e := dbm.NewDB("application", dbm.GoLevelDBBackend, home)
 	require.NoError(t, e)
@@ -54,13 +54,14 @@ func openAcceptanceApp(t *testing.T, home string) (*wasmapp.WasmApp, func()) {
 		cleanup = engine.(interface{ Cleanup() }).Cleanup
 		return engine
 	})}
+	opts = append(opts, extra...)
 	app := wasmapp.NewWasmApp(log.NewNopLogger(), db, nil, true, sims.AppOptionsMap{flags.FlagHome: home}, opts, baseapp.SetChainID(acceptanceChain))
 	return app, cleanup
 }
-func newAcceptanceApp(t *testing.T) *appHarness {
+func newAcceptanceApp(t *testing.T, extra ...wasmkeeper.Option) *appHarness {
 	t.Helper()
 	h := &appHarness{home: t.TempDir(), key: secp256k1.GenPrivKeyFromSecret([]byte("native deterministic signer"))}
-	h.app, h.cleanupVM = openAcceptanceApp(t, h.home)
+	h.app, h.cleanupVM = openAcceptanceApp(t, h.home, extra...)
 	t.Cleanup(func() { h.cleanupVM(); require.NoError(t, h.app.Close()) })
 	signer := sdk.AccAddress(h.key.PubKey().Address())
 	account := authtypes.NewBaseAccount(signer, h.key.PubKey(), 0, 0)
@@ -135,8 +136,8 @@ func (h *appHarness) execute(t *testing.T, msg string, funds int64) []byte {
 // Every mutation uses a signed transaction and actual ABCI FinalizeBlock/Commit.
 // Reopening closes the database and builds fresh keepers/VM against the disk DB.
 // Replay independently initializes genesis and reapplies the identical tx bytes.
-func deployedAcceptanceApp(t *testing.T) *appHarness {
-	h := newAcceptanceApp(t)
+func deployedAcceptanceApp(t *testing.T, extra ...wasmkeeper.Option) *appHarness {
+	h := newAcceptanceApp(t, extra...)
 	signer := sdk.AccAddress(h.key.PubKey().Address()).String()
 	code, e := os.ReadFile("../../artifacts/native_fault.wasm")
 	require.NoError(t, e)

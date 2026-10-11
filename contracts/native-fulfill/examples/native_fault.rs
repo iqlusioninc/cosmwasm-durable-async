@@ -1,7 +1,7 @@
 //! Real-VM acceptance fixture; never deploy as an application contract.
 use cosmwasm_std::{
     entry_point, to_json_binary, Binary, CosmosMsg, Decimal, Deps, DepsMut, Env, MessageInfo,
-    Response, StdError, StdResult, WasmMsg,
+    Reply, Response, StdError, StdResult, SubMsg, WasmMsg,
 };
 use native_async::{
     PollOutcome, PollResponse, PollStep, Resolution, RuntimeMsg, SchedulerMsg, TaskProgram,
@@ -19,6 +19,7 @@ pub enum Execute {
     Resume { task_id: u64 },
     Cancel { task_id: u64 },
     Burn {},
+    HostReply {},
 }
 #[entry_point]
 pub fn instantiate(
@@ -34,14 +35,25 @@ pub fn instantiate(
 #[entry_point]
 pub fn execute(
     deps: DepsMut,
-    _: Env,
+    env: Env,
     info: MessageInfo,
     msg: Execute,
 ) -> StdResult<Response<RuntimeMsg>> {
+    if matches!(msg, Execute::HostReply {}) && info.sender == env.contract.address {
+        return Ok(Response::new().add_submessage(SubMsg::reply_always(
+            WasmMsg::Execute {
+                contract_addr: env.contract.address.into_string(),
+                msg: Binary::from(b"invalid execute JSON"),
+                funds: vec![],
+            },
+            1,
+        )));
+    }
     if deps.storage.get(b"operator").as_deref() != Some(info.sender.as_bytes()) {
         return Err(StdError::generic_err("operator required"));
     }
     let custom = match msg {
+        Execute::HostReply {} => return Err(StdError::generic_err("self required")),
         Execute::Burn {} => loop {
             std::hint::black_box(deps.storage.get(b"writes"));
         },
@@ -109,6 +121,39 @@ pub fn sudo(deps: DepsMut, env: Env, msg: TaskSudoMsg) -> StdResult<Response> {
         PollStep::Resume { .. } => {
             let mode = String::from_utf8(deps.storage.get(b"mode").unwrap_or_default()).unwrap();
             match mode.as_str() {
+                "host_query" => {
+                    #[derive(Deserialize)]
+                    struct Count {
+                        writes: u64,
+                    }
+                    let count: Count = deps
+                        .querier
+                        .query_wasm_smart(&env.contract.address, &Empty {})?;
+                    std::hint::black_box(count.writes);
+                    PollOutcome::Complete {
+                        output: Binary::default(),
+                    }
+                }
+                "host_execute" | "host_reply" => {
+                    let msg = if mode == "host_reply" {
+                        to_json_binary(&Execute::HostReply {})?
+                    } else {
+                        to_json_binary(&Execute::Mode {
+                            value: "complete".into(),
+                        })?
+                    };
+                    return Ok(Response::new().set_data(to_json_binary(&PollResponse {
+                        outcome: PollOutcome::Complete {
+                            output: Binary::default(),
+                        },
+                        messages: vec![WasmMsg::Execute {
+                            contract_addr: env.contract.address.into_string(),
+                            msg,
+                            funds: vec![],
+                        }
+                        .into()],
+                    })?));
+                }
                 "trap" => panic!("fault after write"),
                 "out_of_gas" => loop {
                     std::hint::black_box(deps.storage.get(b"writes"));
@@ -143,6 +188,11 @@ pub fn sudo(deps: DepsMut, env: Env, msg: TaskSudoMsg) -> StdResult<Response> {
         outcome,
         messages: vec![],
     })?))
+}
+#[entry_point]
+pub fn reply(deps: DepsMut, _: Env, _: Reply) -> StdResult<Response> {
+    std::hint::black_box(deps.storage.get(b"writes"));
+    Ok(Response::new())
 }
 #[entry_point]
 pub fn query(deps: Deps, _: Env, _: Empty) -> StdResult<Binary> {

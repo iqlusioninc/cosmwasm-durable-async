@@ -6,21 +6,60 @@ The Go module checksums are committed. Go 1.27.2 compiles the packages but canno
 link this dependency graph (`encoding/json.unquoteBytes` in upstream sonic), so
 the scripts explicitly select 1.23.6.
 
-Build both real Rust artifacts using `contracts/native-fulfill/build-wasmd.sh`
+Build all three real Rust artifacts using `contracts/native-fulfill/build-wasmd.sh`
 from the repository root, then run:
 
 ```sh
 bash integration/wasmd/test.sh
-bash integration/wasmd/test-upstream.sh
 ```
 
+`test.sh` delegates to `test-upstream.sh`: both now build the required patched
+native runtime and run keeper plus upstream-app tests. Requirements include
+`rustc 1.99.0 (b940084d7 2026-09-28)`, Cargo, a C linker, curl, tar and ripgrep.
+The verified native build platform is macOS arm64; Linux naming is wired but
+has not been exercised by this acceptance run.
+
 The scripts create temporary caches/checkouts. Reuse known complete caches with
-`NATIVE_ASYNC_GOPATH` and `NATIVE_ASYNC_GOCACHE`. Do not reuse the old
+`NATIVE_ASYNC_GOPATH`, `NATIVE_ASYNC_GOCACHE`, and `NATIVE_ASYNC_CARGO_HOME`. Do not reuse the old
 `/private/tmp/durable-go` cache: its module directories were incomplete skeletons
 that Go incorrectly treated as already downloaded. The upstream script copies a
 fresh, checksum-verified module checkout, applies exact-anchor transformations,
 compiles the actual app, creates a temporary Go workspace, and runs the app tests.
 It does not modify upstream module caches or vendor third-party source here.
+
+## Required native error boundary
+
+Stock wasmvm erases backend/cache error provenance into the same string channel
+as a Wasm trap. It cannot safely implement the scheduler's infrastructure-failure
+policy. `build-vm.sh` copies pinned wasmvm v2.2.4 and downloads CosmWasm v2.2.2
+(archive SHA256 `54a75734ef751f76381f08fd595600f4321e6a480b69bf3ceb7debb76dc9f9e9`).
+`cmd/patch-vm-boundary` applies exact-anchor source changes and rebuilds the native
+library. The bootstrap prints its actual SHA256; binaries are not committed.
+It verifies the original native Cargo.lock SHA256
+`d185ec9e660b9a607cecbaa69e3adc17d05ae7d60a24bccea75ca2e2210198af`
+and changes only six git-source entries to local paths plus lock format v3→v4.
+The resulting SHA256 is
+`f0562bb3bc97c169f03c8c7c719c5291eb49147432148b0c17caeb73af0c6624`;
+all builds use `--locked`, preserving transitive versions/checksums. Cold runs
+download Rust/Go dependencies and compile the native library and source tests;
+allow several minutes and several GB of temporary build/cache storage.
+
+The extension preserves typed `VmError` through Wasmer user errors. Only real
+Wasm trap codes and enumerated guest validation/communication/response errors
+become errno 3 (`GuestError`); gas depletion retains errno 2. Backend, cache,
+integrity, instantiation, compiler and unknown failures retain errno 1 and become
+an `InfrastructureError` panic before wasmd can stringify them. Guest-originated
+oversized storage and invalid query JSON get explicit guest variants at their
+source, not text-based classification. The app rethrows typed infrastructure
+faults before BaseApp's ordinary transaction recovery, and the smart-query RPC
+recovery rethrows non-OOG faults. Guest trap/OOG remains a charged task pause.
+
+The additive `native_async_error_abi()` symbol and initialization check fail closed
+when patched Go is linked to a stock/stale library. Bootstrap tests that negative
+combination before installing the rebuilt library. Direct stock `go test` is now
+intentionally unsupported: reuse the printed Go workspace, which includes both
+patched wasmd and wasmvm, or rerun the bootstrap. This is an experimental pinned
+runtime extension, not an upstream-compatible production activation.
 
 ## Integration seams
 
@@ -70,7 +109,7 @@ BeginBlock work against this partition.
   wake at H. Deadlines are checked directly, and accepted inboxes survive their
   deadline. Task expiry dominates all execution and callbacks.
 - Success commits continuation, inbox consumption, Wasm writes and outbound
-  messages together. VM errors, OOG, invalid responses and message errors roll
+  messages together. Guest errors, OOG, invalid responses and message errors roll
   back the child cache, preserve old state/inbox, charge real gas, and pause.
 - Prepaid allocated-byte/finite-lifetime rent and cleanup fees; remaining
   execution escrow is refunded on terminal transitions. Terminal records retain
@@ -106,11 +145,23 @@ reasons are separate from bounded diagnostic messages. The upstream-tagged suite
 checks actual app construction, EndBlock invocation, module meter isolation and
 the patched real keeper migration rejection.
 
-The keeper reconstruction test is not node restart, replay, state-sync or a
-multi-validator app-hash test. The initial app test directly calls EndBlock; full
-ABCI FinalizeBlock/proposal acceptance remains separately tracked acceptance
-work. Outbound reply/data aggregation and IBC-specific resolver adapters
-are not provided.
+Additional acceptance uses signed ABCI transactions, disk close/reopen and
+deterministic replay. Real callback storage panics through Sudo, nested Execute,
+Query and Reply propagate without task charges or committed child writes; an
+ordinary signed transaction proves BaseApp does not turn a typed native fault
+into a transaction error code. This is not state-sync or a multi-validator
+deployment test. Outbound reply/data aggregation and IBC-specific resolver
+adapters are not provided.
+
+ABI1 rejects Wasm start sections deterministically at validation and raw-Wasm
+compilation, including unchecked imports/cache rebuild. Wasm start imports run
+before upstream initializes its host/gas context, so accepting them could turn
+guest-controlled code into a native lifecycle panic. Contracts using a Wasm
+start section must be rebuilt without one. The native cache discriminator is
+changed to prevent reusing pre-extension compiled modules. Structured fallback
+classification preserves `InstantiationError::Start`/link traps, treats guest
+import type/missing-import errors as validation failures, and leaves resource,
+CPU-feature, architecture and store mismatches as infrastructure failures.
 
 Config is deterministic constructor data, not mutable governance state.
 `ExperimentalConfig` is a local-harness policy with explicit uncalibrated prices;
@@ -118,6 +169,6 @@ the default keeper tests use zero storage rent plus a cleanup fee to isolate
 execution accounting, while the patched app uses nonzero storage rent. Final
 bank transfer/accounting writes are metered in the reserved host slice and
 covered by prepaid maintenance fees; the execution fee is settled from the
-attempt plus its first host disposition write. Lease growth, budget changes,
-refund-address changes, privileged import validation, exhaustive failure
+attempt plus its first host disposition write. Lease growth, budget changes and
+refund-address management have parity tests. Privileged import validation, exhaustive failure
 and overload coverage, and production calibration remain follow-ups.
