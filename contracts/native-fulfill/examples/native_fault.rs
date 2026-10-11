@@ -18,6 +18,7 @@ pub enum Execute {
     Mode { value: String },
     Resume { task_id: u64 },
     Cancel { task_id: u64 },
+    Burn {},
 }
 #[entry_point]
 pub fn instantiate(
@@ -41,6 +42,9 @@ pub fn execute(
         return Err(StdError::generic_err("operator required"));
     }
     let custom = match msg {
+        Execute::Burn {} => loop {
+            std::hint::black_box(deps.storage.get(b"writes"));
+        },
         Execute::Start {
             gas_per_poll,
             expires_at,
@@ -110,10 +114,16 @@ pub fn sudo(deps: DepsMut, env: Env, msg: TaskSudoMsg) -> StdResult<Response> {
                     std::hint::black_box(deps.storage.get(b"writes"));
                 },
                 "invalid" => return Ok(Response::new().set_data(Binary::from(b"invalid ABI"))),
-                "outbound" => {
+                "outbound" | "fail_outbound" => {
                     return Ok(Response::new().set_data(to_json_binary(&PollResponse {
-                        outcome: PollOutcome::Complete {
-                            output: Binary::default(),
+                        outcome: if mode == "fail_outbound" {
+                            PollOutcome::Fail {
+                                error: "intentional failure".into(),
+                            }
+                        } else {
+                            PollOutcome::Complete {
+                                output: Binary::default(),
+                            }
                         },
                         messages: vec![WasmMsg::Execute {
                             contract_addr: env.contract.address.into_string(),

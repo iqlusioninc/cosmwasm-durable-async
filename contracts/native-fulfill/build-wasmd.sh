@@ -15,6 +15,7 @@ fi
 [[ "$("$WASM_OPT" --version)" == 'wasm-opt version 123 (version_123)' ]] || { echo 'Binaryen 123 required' >&2; exit 1; }
 cargo build --locked -p native-fulfill-example --release --target wasm32-unknown-unknown
 cargo build --locked -p native-fulfill-example --example native_service --release --target wasm32-unknown-unknown
+cargo build --locked -p native-fulfill-example --example native_fault --release --target wasm32-unknown-unknown
 mkdir -p artifacts
 normalize() {
   "$WASM_OPT" "$1" --enable-sign-ext --enable-bulk-memory --enable-nontrapping-float-to-int \
@@ -23,4 +24,5 @@ normalize() {
 }
 normalize target/wasm32-unknown-unknown/release/native_fulfill_example.wasm artifacts/native_fulfill_example.wasm
 normalize target/wasm32-unknown-unknown/release/examples/native_service.wasm artifacts/native_service.wasm
-shasum -a 256 artifacts/native_fulfill_example.wasm artifacts/native_service.wasm
+normalize target/wasm32-unknown-unknown/release/examples/native_fault.wasm artifacts/native_fault.wasm
+shasum -a 256 artifacts/native_fulfill_example.wasm artifacts/native_service.wasm artifacts/native_fault.wasm

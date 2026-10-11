@@ -20,11 +20,24 @@ type faultHarness struct {
 	codeID         uint64
 }
 
+// Keep real harness assertions/fatals, but omit its routine IAVL debug logs.
+type acceptanceQuietTB struct{ testing.TB }
+
+func (acceptanceQuietTB) Log(...any)          {}
+func (acceptanceQuietTB) Logf(string, ...any) {}
+
 func newFaultHarness(t *testing.T) *faultHarness {
 	t.Helper()
 	code, err := os.ReadFile("../../artifacts/native_fault.wasm")
 	require.NoError(t, err, "build the real fault fixture with build-fault-wasmd.sh")
-	ctx, k, keepers := setup(t)
+	k := &Keeper{Config: testConfig()}
+	ctx, keepers := wasmkeeper.CreateTestInput(acceptanceQuietTB{t}, false, wasmkeeper.BuiltInCapabilities(), k.Options()...)
+	k.Key = keepers.WasmStoreKey
+	k.Bank = keepers.BankKeeper
+	k.Wasm = keepers.WasmKeeper
+	module := keepers.AccountKeeper.NewAccount(ctx, authtypes.NewEmptyModuleAccount(ModuleName)).(sdk.ModuleAccountI)
+	keepers.AccountKeeper.SetModuleAccount(ctx, module)
+	ctx = ctx.WithBlockHeight(10)
 	creator := sdk.AccAddress(bytes.Repeat([]byte{19}, 20))
 	keepers.Faucet.Fund(ctx, creator, sdk.NewInt64Coin("ugas", 100_000_000))
 	id, _, err := keepers.ContractKeeper.Create(ctx, creator, code, nil)

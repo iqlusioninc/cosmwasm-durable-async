@@ -93,13 +93,18 @@ func (h *appHarness) tx(t *testing.T, gas uint64, msg sdk.Msg) []byte {
 	return raw
 }
 func (h *appHarness) block(t *testing.T, txs ...[]byte) *abci.ResponseFinalizeBlock {
+	return h.finalize(t, true, txs...)
+}
+func (h *appHarness) finalize(t *testing.T, requireSuccess bool, txs ...[]byte) *abci.ResponseFinalizeBlock {
 	t.Helper()
 	height := h.app.LastBlockHeight() + 1
 	req := &abci.RequestFinalizeBlock{Height: height, Time: acceptanceTime.Add(time.Duration(height) * time.Second), Txs: txs, Hash: bytes.Repeat([]byte{byte(height)}, 32)}
 	result, e := h.app.FinalizeBlock(req)
 	require.NoError(t, e)
-	for _, tx := range result.TxResults {
-		require.Zero(t, tx.Code, tx.Log)
+	if requireSuccess {
+		for _, tx := range result.TxResults {
+			require.Zero(t, tx.Code, tx.Log)
+		}
 	}
 	consumed := h.app.GetContextForFinalizeBlock(nil).BlockGasMeter().GasConsumed()
 	require.LessOrEqual(t, consumed, uint64(400_000_000))
@@ -211,14 +216,28 @@ func TestAcceptanceActualMigrationLifecycle(t *testing.T) {
 		task := h.task(t)
 		require.Equal(t, status, task.Status.Kind)
 		info := h.app.WasmKeeper.GetContractInfo(ctx, h.owner)
-		_, e := wasmkeeper.NewDefaultPermissionKeeper(h.app.WasmKeeper).Migrate(ctx, h.owner, signer, 2, []byte(`{}`))
+		snapshotStorage := func() map[string][]byte {
+			snapshot := map[string][]byte{}
+			h.app.WasmKeeper.IterateContractState(ctx, h.owner, func(key, value []byte) bool { snapshot[string(key)] = bytes.Clone(value); return false })
+			return snapshot
+		}
+		storage := snapshotStorage()
+		checkStorage := func() {
+			require.Equal(t, storage, snapshotStorage())
+			afterTask := h.task(t)
+			require.Equal(t, task.State, afterTask.State)
+			require.Equal(t, task.Inbox, afterTask.Inbox)
+		}
+		_, e = wasmkeeper.NewDefaultPermissionKeeper(h.app.WasmKeeper).Migrate(ctx, h.owner, signer, 2, []byte(`{}`))
 		require.ErrorContains(t, e, "live async tasks")
 		require.Equal(t, info, h.app.WasmKeeper.GetContractInfo(ctx, h.owner))
 		require.Equal(t, task, h.task(t))
+		checkStorage()
 		_, e = wasmkeeper.NewGovPermissionKeeper(h.app.WasmKeeper).Migrate(ctx, h.owner, signer, 2, []byte(`{}`))
 		require.ErrorContains(t, e, "live async tasks")
 		require.Equal(t, info, h.app.WasmKeeper.GetContractInfo(ctx, h.owner))
 		require.Equal(t, task, h.task(t))
+		checkStorage()
 	}
 	reject("runnable")
 	h.block(t)
@@ -230,6 +249,22 @@ func TestAcceptanceActualMigrationLifecycle(t *testing.T) {
 	require.Equal(t, "cancelled", h.task(t).Status.Kind)
 	h.block(t, h.tx(t, 100_000_000, &wasmtypes.MsgMigrateContract{Sender: signer.String(), Contract: h.owner.String(), CodeID: 2, Msg: []byte(`{}`)}))
 	require.Equal(t, uint64(2), h.app.WasmKeeper.GetContractInfo(h.app.NewUncachedContext(false, cmtproto.Header{}), h.owner).CodeID)
+}
+
+func TestAcceptanceOrdinaryOutOfGasRetainsAsyncPartition(t *testing.T) {
+	h := deployedAcceptanceApp(t)
+	h.block(t, h.execute(t, `{"start":{"gas_per_poll":80000000,"expires_at":100}}`, 1_000_000))
+	burn := h.tx(t, 180_000_000, &wasmtypes.MsgExecuteContract{Sender: sdk.AccAddress(h.key.PubKey().Address()).String(), Contract: h.owner.String(), Msg: []byte(`{"burn":{}}`), Funds: sdk.Coins{}})
+	result := h.finalize(t, false, burn)
+	require.Len(t, result.TxResults, 1)
+	tx := result.TxResults[0]
+	require.NotZero(t, tx.Code)
+	require.GreaterOrEqual(t, tx.GasUsed, int64(180_000_000), "ordinary transaction must actually exhaust its partition")
+	require.Equal(t, "waiting", h.task(t).Status.Kind, "funded task still polls after ordinary OOG")
+	total := h.blockGas[len(h.blockGas)-1]
+	require.Greater(t, total, uint64(180_000_000))
+	require.LessOrEqual(t, total, uint64(400_000_000))
+	t.Logf("ordinary OOG gas_used=%d declared=180000000 final_block_gas=%d", tx.GasUsed, total)
 }
 
 // A normal signed FeeTx exactly fills the declared ordinary partition; the
