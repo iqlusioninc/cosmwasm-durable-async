@@ -1,6 +1,6 @@
-# Native async funding: first implementation increment
+# Native async ABI and reference host runtime
 
-This crate implements the proposed contract funding protocol and a reference host escrow keeper. It does **not** add async execution to an existing chain. Contracts using these custom messages require a chain adapter; unmodified wasmd does not understand them.
+This crate implements the contract funding protocol, executable task ABI, and a storage-backed reference scheduler. Contracts using these custom messages require a chain adapter; unmodified wasmd does not understand them.
 
 Implemented:
 
@@ -12,6 +12,27 @@ Implemented:
 - Transactional tests exercising bank transfers, cross-contract isolation, insufficient balances, overflow, and downstream rollback.
 
 The optional `host` feature is a **reference implementation**, using CosmWasm's storage interface for a portable test harness. A production Cosmos SDK keeper will need equivalent Go state transitions and bank integration, or a deliberate host embedding of this code. It is not Wasm contract storage and must never be exposed as a contract entry point.
+
+## Executable runtime
+
+`RuntimeMsg::Register` carries `TaskProgram`, the existing funding fields, and a prepaid byte allocation. The host derives the contract's code checksum. `RuntimeMsg::Funding` wraps the standard funding messages; `RuntimeMsg::Deliver` forwards the owner contract's authenticated callback sender. Registration returns a JSON task ID in response data. `RuntimeQuery::Task` exposes execution state; `RuntimeQuery::Funding` exposes the standard funding queries, including reserved funds, cumulative execution fees, storage allocation, and lease payment.
+
+The private sudo ABI is `TaskSudoMsg::PollTask(PollRequest)`. Contract sudo returns `PollResponse` encoded in response data, with **no outer dispatchable messages**. `PollResponse.messages` are dispatched by the host only after validating and staging the new continuation/wait. The first wait sequence is 1. A single poll can return Pending, Yield, Complete, or Fail; resolutions include success, application error, timeout, and height timer. Shared JSON fixtures under `fixtures/native-async/v1` are typed-roundtripped by Rust and consumed by the Go integration.
+
+With `host` enabled, `runtime::Runtime` provides:
+
+- Persistent height indexes for readiness, expiry, and pruning; FIFO task queues per contract and a persistent contract round-robin ring. No sleeping-task scan is used. A gas-deferred head retains priority in the next block; the implementation conservatively stops dispatch for the remainder of the current block.
+- Independent visit, promotion, expiration, and pruning limits plus a separately reserved maintenance gas allocation. The application must partition ordinary transaction gas, async `block_gas`, and `maintenance_gas` before transaction admission.
+- At most one attempt per task/block. Registration, yields, and scheduler-produced callbacks become eligible at H+1. Ordinary callbacks to existing tasks can run at H.
+- Exact operation deadlines, authenticated bounded durable inboxes, preserved accepted outcomes after deadline, and logical expiry on access even when cleanup is delayed.
+- Full attempt escrow reservation before guest dispatch, actual trusted host-meter settlement, unused reservation release, and fees that survive guest rollback. `PollHost` returns metered task failures separately from node errors; node errors abort the whole block cache.
+- Child storage caches for guest writes, scheduler state, bank effects, and outbound calls. Trap, out-of-gas, invalid outcome, and failed messages restore the prior continuation/inbox. Application Fail commits prior writes and becomes terminal.
+- Staged waits for immediate service callbacks. In-flight cancellation/resumption is rejected; atomic third-party deposits survive settlement without granting retry authority.
+- Prepaid fixed byte/height leases, admission limits, completion/failure/cancel/expiry refunds, bounded retained-record pruning, and active-task migration gating. IDs are monotonic per owning contract and never reused after pruning.
+
+`PollHost` is an explicit trusted adapter contract: all user/bank effects must use the supplied transactional storage; gas must come from the host meter; checksum must come from the actual contract; callbacks must pass the actual scheduler phase. A no-op transfer or process-local user side effect is not a valid adapter. Route **all** management of executable records through `Runtime`, rather than bypassing it with the legacy funding-only `Keeper`.
+
+Byte allocation covers serialized task and funding records, a bounded 1024-byte index allowance, and worst-case escaped JSON inbox reservation. The configured host/maintenance gas costs and allocation allowance are reference policy parameters, not production calibration. Lease duration and allocation are fixed at registration in this version; resizing and extensions are not supported. Migration remains conservatively blocked until expired records have completed their bounded terminal transition.
 
 ## Contract wiring
 
@@ -31,7 +52,7 @@ These return `Response<SchedulerMsg>` and authoritative host query results throu
 
 The test contract in [tests/support/mod.rs](tests/support/mod.rs) demonstrates registration, an explicit split of business funds and initial gas funds, and the standard message routing. Its deliberately dishonest `ClaimFunds` and `FundThenFail` paths are adversarial fixtures, not recommended contract APIs.
 
-`RegisterTask` currently registers **only a funding record**. It carries no executable continuation yet; `Runnable` means the funding state permits execution, not that a task will actually be polled. Its host response data contains the allocated task ID as JSON. Contract start APIs should use submessage reply handling to return that ID to their callers; do not assume a child message's response data automatically becomes the contract's execute response.
+The legacy `SchedulerMsg::RegisterTask` still registers **only a funding record**. Use `RuntimeMsg::Register` for executable tasks. Both return the allocated task ID as JSON. Contract start APIs should use submessage reply handling to return that ID to their callers; do not assume a child message's response data automatically becomes the contract's execute response.
 
 ## Custody and trust boundary
 
@@ -47,9 +68,9 @@ The chain adapter must:
 
 The host debits the owning contract's actual balance, so a JSON amount cannot mint credit. It cannot distinguish attached user coins from treasury coins once they are in that balance. The contract must enforce its business/gas split and treasury sponsorship authorization. Plain bank transfers create no scheduler credit.
 
-Deposits do not resume tasks or change refund ownership. Contributors fund the existing budget; unused execution funds go to the recorded refund address on cancellation. Funding transactions pay their ordinary transaction fee separately. Cancellation is allowed after logical expiry to reclaim funds while automatic cleanup is not yet implemented. Top-ups and resumption are rejected at the exact expiry height.
+Deposits do not resume tasks or change refund ownership. Contributors fund the existing budget; unused execution funds go to the recorded refund address on termination. Funding transactions pay their ordinary transaction fee separately. Cancellation is allowed after logical expiry to reclaim funds before bounded automatic cleanup. Top-ups and resumption are rejected at the exact expiry height.
 
-Configuration's fee denomination and custody account must remain fixed for the lifetime of these records. Gas price can change under host policy; funding queries recalculate the maximum attempt charge and resume checks the task's price cap. `gas_per_poll` denotes the future total metered attempt allocation; this increment does not meter, reserve, or charge execution gas.
+Configuration's fee denomination and custody account must remain fixed for the lifetime of these records. Gas price can change under host policy; funding queries recalculate the maximum attempt charge and resume checks the task's price cap. `gas_per_poll` denotes the total metered attempt allocation, including configured host overhead.
 
 ## Validation and remaining runtime work
 
@@ -62,4 +83,4 @@ cargo build -p native-async --target wasm32-unknown-unknown --locked
 
 The default feature set contains only wire types and contract helpers. Enable `host` to run the funding integration tests. cw-multi-test verifies transactional behavior in simulation; it does not establish real VM gas use, block latency, or chain deployment compatibility.
 
-Remaining work: executable registration and poll ABI, bounded block queues, durable inboxes/timers, fee reservation and settlement outside poll rollback, completion/failure refunds, storage leases and admission limits, retained-result pruning, migration gating, and a pinned wasmd/SDK integration. Queries intentionally omit reserved gas, cumulative fees, and storage lease balances until those accounting components exist. Do not use this reference keeper on a production chain before those limits and economics are implemented.
+Reference tests exercise the storage-backed scheduler, bank adapter, immediate callbacks, rollback, exact boundaries, fairness, and lifecycle accounting. They do not establish real Wasm VM gas conversion, cold/warm validator equivalence, state sync, sustained overload progress, or production storage/gas calibration. Those require pinned chain integration and application-level evidence. Lease extension, allocation growth, budget/refund-policy editing, multiple simultaneous subscriptions, and reserved per-block service remain outside this version.

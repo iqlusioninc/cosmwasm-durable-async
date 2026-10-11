@@ -80,6 +80,7 @@ pub enum PauseReason {
     OutOfGas,
     Trap,
     MessageFailure,
+    InvalidResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -93,6 +94,8 @@ pub enum TaskStatus {
     },
     Cancelled,
     Expired,
+    Completed,
+    Failed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -102,6 +105,14 @@ pub struct TaskFunding {
     pub control: String,
     pub refund: String,
     pub available: Uint128,
+    #[serde(default)]
+    pub reserved: Uint128,
+    #[serde(default)]
+    pub cumulative_execution_fees: Uint128,
+    #[serde(default)]
+    pub allocated_bytes: u64,
+    #[serde(default)]
+    pub storage_lease_paid: Uint128,
     pub gas_per_poll: u64,
     pub max_gas_price: Decimal,
     pub max_attempt_charge: Uint128,

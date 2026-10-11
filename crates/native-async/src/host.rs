@@ -86,6 +86,10 @@ impl Keeper {
                     control: control.to_string(),
                     refund: refund.to_string(),
                     available: funds.amount,
+                    reserved: Uint128::zero(),
+                    cumulative_execution_fees: Uint128::zero(),
+                    allocated_bytes: 0,
+                    storage_lease_paid: Uint128::zero(),
                     gas_per_poll,
                     max_gas_price,
                     max_attempt_charge,
@@ -156,7 +160,10 @@ impl Keeper {
             SchedulerMsg::CancelTask { task_id, actor } => {
                 let mut task = load(storage, contract, task_id)?;
                 authorize(api, &task, &actor)?;
-                if matches!(task.status, TaskStatus::Cancelled) {
+                if matches!(
+                    task.status,
+                    TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
+                ) {
                     return Err(error("task already cancelled"));
                 }
                 // Also permits reclamation after logical expiry, before cleanup.
@@ -196,7 +203,12 @@ impl Keeper {
                 let contract = api.addr_validate(&contract)?;
                 let mut task = load(storage, &contract, task_id)?;
                 task.max_attempt_charge = self.attempt_charge(task.gas_per_poll)?;
-                if height >= task.expires_at && task.status != TaskStatus::Cancelled {
+                if height >= task.expires_at
+                    && !matches!(
+                        task.status,
+                        TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
+                    )
+                {
                     task.status = TaskStatus::Expired;
                 }
                 to_json_binary(&task)
@@ -215,7 +227,13 @@ impl Keeper {
         resume: ResumeState,
     ) -> StdResult<()> {
         let mut task = load(storage, contract, task_id)?;
-        if matches!(task.status, TaskStatus::Cancelled | TaskStatus::Expired) {
+        if matches!(
+            task.status,
+            TaskStatus::Cancelled
+                | TaskStatus::Expired
+                | TaskStatus::Completed
+                | TaskStatus::Failed
+        ) {
             return Err(error("terminal task"));
         }
         task.status = TaskStatus::Paused { reason, resume };
@@ -238,7 +256,7 @@ impl Keeper {
         }
         Ok(())
     }
-    fn attempt_charge(&self, gas: u64) -> StdResult<Uint128> {
+    pub(crate) fn attempt_charge(&self, gas: u64) -> StdResult<Uint128> {
         Uint128::from(gas)
             .checked_mul_ceil(self.config.gas_price)
             .map_err(|e| error(e.to_string()))
@@ -260,23 +278,40 @@ fn key(prefix: &[u8], contract: &Addr, task_id: TaskId) -> Vec<u8> {
     ]
     .concat()
 }
-fn load(storage: &dyn Storage, contract: &Addr, task_id: TaskId) -> StdResult<TaskFunding> {
+pub(crate) fn load(
+    storage: &dyn Storage,
+    contract: &Addr,
+    task_id: TaskId,
+) -> StdResult<TaskFunding> {
     from_json(
         storage
             .get(&key(b"task", contract, task_id))
             .ok_or_else(|| error("unknown task"))?,
     )
 }
-fn save(storage: &mut dyn Storage, contract: &Addr, task: &TaskFunding) -> StdResult<()> {
+pub(crate) fn save(
+    storage: &mut dyn Storage,
+    contract: &Addr,
+    task: &TaskFunding,
+) -> StdResult<()> {
     storage.set(
         &key(b"task", contract, task.task_id),
         &to_json_binary(task)?,
     );
     Ok(())
 }
+pub(crate) fn remove(storage: &mut dyn Storage, contract: &Addr, id: u64) {
+    storage.remove(&key(b"task", contract, id));
+}
 fn active(task: &TaskFunding, height: u64) -> StdResult<()> {
     if height >= task.expires_at
-        || matches!(task.status, TaskStatus::Cancelled | TaskStatus::Expired)
+        || matches!(
+            task.status,
+            TaskStatus::Cancelled
+                | TaskStatus::Expired
+                | TaskStatus::Completed
+                | TaskStatus::Failed
+        )
     {
         return Err(error("task is terminal or expired"));
     }

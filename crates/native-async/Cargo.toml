@@ -15,6 +15,7 @@ schemars = "0.8"
 
 [dev-dependencies]
 cw-multi-test = "2.5"
+serde_json = "1"
 
 [[test]]
 name = "funding"
