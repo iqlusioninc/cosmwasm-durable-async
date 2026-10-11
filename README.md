@@ -88,6 +88,10 @@ There is no background executor, exactly-once off-chain delivery, automatic comp
 
 ## Design and verification scope
 
+The proposed [native CosmWasm async design](docs/superpowers/specs/2026-10-11-native-cosmwasm-async-design.md) explores chain-managed tasks, block scheduling, prepaid gas, and durable wakeups. It is a runtime-extension proposal, not functionality implemented by this prototype.
+
+The first [native funding implementation](crates/native-async/README.md) provides standard contract messages and a reference host escrow keeper, tested with simulated bank transfers and transactional rollback. It does not yet execute tasks or integrate with wasmd. Run its host integration tests with `cargo test --workspace --all-features --locked`.
+
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
 Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The prototype has no production IBC adapter, external scheduler, or gas-metered VM test suite. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.

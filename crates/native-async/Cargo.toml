@@ -1,0 +1,21 @@
+[package]
+name = "native-async"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+host = []
+
+[dependencies]
+cosmwasm-std.workspace = true
+serde.workspace = true
+schemars = "0.8"
+
+[dev-dependencies]
+cw-multi-test = "2.5"
+
+[[test]]
+name = "funding"
+required-features = ["host"]
