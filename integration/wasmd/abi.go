@@ -65,23 +65,24 @@ type Task struct {
 	ID    uint64 `json:"task_id"`
 	Owner string `json:"contract"`
 	Register
-	Checksum  []byte      `json:"checksum"`
-	State     []byte      `json:"state"`
-	Started   bool        `json:"started"`
-	Wait      *Wait       `json:"wait,omitempty"`
-	Inbox     *Resolution `json:"inbox,omitempty"`
-	Sequence  uint64      `json:"wait_sequence"`
-	Status    string      `json:"status"`
-	Pause     string      `json:"pause_reason,omitempty"`
-	Escrow    string      `json:"available"`
-	Fees      string      `json:"cumulative_execution_fees"`
-	Reserved  string      `json:"reserved"`
-	LeasePaid string      `json:"storage_lease_paid"`
-	LastPoll  uint64      `json:"last_poll"`
-	ReadyAt   uint64      `json:"ready_at"`
-	QueueKey  []byte      `json:"queue_key,omitempty"`
-	TimerKey  []byte      `json:"timer_key,omitempty"`
-	ExpiryKey []byte      `json:"expiry_key"`
+	Checksum   []byte      `json:"checksum"`
+	State      []byte      `json:"state"`
+	Started    bool        `json:"started"`
+	Wait       *Wait       `json:"wait,omitempty"`
+	Inbox      *Resolution `json:"inbox,omitempty"`
+	Sequence   uint64      `json:"wait_sequence"`
+	Status     string      `json:"status"`
+	Pause      string      `json:"pause_reason,omitempty"`
+	Diagnostic string      `json:"diagnostic,omitempty"`
+	Escrow     string      `json:"available"`
+	Fees       string      `json:"cumulative_execution_fees"`
+	Reserved   string      `json:"reserved"`
+	LeasePaid  string      `json:"storage_lease_paid"`
+	LastPoll   uint64      `json:"last_poll"`
+	ReadyAt    uint64      `json:"ready_at"`
+	QueueKey   []byte      `json:"queue_key,omitempty"`
+	TimerKey   []byte      `json:"timer_key,omitempty"`
+	ExpiryKey  []byte      `json:"expiry_key"`
 }
 
 type StartStep struct {
@@ -115,6 +116,19 @@ type FundTaskMsg struct {
 	TaskID      uint64   `json:"task_id"`
 	Contributor string   `json:"contributor"`
 	Funds       sdk.Coin `json:"funds"`
+}
+type ExtendLeaseMsg struct {
+	TaskID         uint64 `json:"task_id"`
+	Actor          string `json:"actor"`
+	AllocatedBytes uint64 `json:"allocated_bytes"`
+	ExpiresAt      uint64 `json:"expires_at"`
+}
+type UpdateBudgetMsg struct {
+	TaskID      uint64 `json:"task_id"`
+	Actor       string `json:"actor"`
+	GasPerPoll  uint64 `json:"gas_per_poll"`
+	MaxGasPrice string `json:"max_gas_price"`
+	Refund      string `json:"refund"`
 }
 
 func (t Task) Request() []byte {

@@ -12,7 +12,7 @@ import (
 
 func TestProposalGasPartition(t *testing.T) {
 	ctx, k, keepers := setup(t)
-	ctx = ctx.WithConsensusParams(cmtproto.ConsensusParams{Block: &cmtproto.BlockParams{MaxGas: 200_000_000}})
+	ctx = ctx.WithConsensusParams(cmtproto.ConsensusParams{Block: &cmtproto.BlockParams{MaxGas: 400_000_000}})
 	noopPrepare := func(_ sdk.Context, r *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
 		return &abci.ResponsePrepareProposal{Txs: r.Txs}, nil
 	}
@@ -27,7 +27,7 @@ func TestProposalGasPartition(t *testing.T) {
 		require.NoError(t, e)
 		return raw
 	}
-	small, big := tx(50_000_000), tx(100_000_001)
+	small, big := tx(90_000_000), tx(180_000_001)
 	response, e := process(ctx, &abci.RequestProcessProposal{Txs: [][]byte{big}})
 	require.NoError(t, e)
 	require.Equal(t, abci.ResponseProcessProposal_REJECT, response.Status)
@@ -40,7 +40,7 @@ func TestProposalGasPartition(t *testing.T) {
 	proposal, e := prepare(ctx, &abci.RequestPrepareProposal{Txs: [][]byte{small, big, small}})
 	require.NoError(t, e)
 	require.Len(t, proposal.Txs, 2)
-	require.Equal(t, int64(200_000_000), ctx.ConsensusParams().Block.MaxGas)
+	require.Equal(t, int64(400_000_000), ctx.ConsensusParams().Block.MaxGas)
 }
 func TestMaintenanceOutOfGasAtomic(t *testing.T) {
 	ctx, k, _ := setup(t)
@@ -55,8 +55,8 @@ func TestMaintenanceOutOfGasAtomic(t *testing.T) {
 	ctx = ctx.WithGasMeter(storetypes.NewInfiniteGasMeter())
 	require.Equal(t, []byte("before"), k.store(ctx).Get(key))
 	k.Config.MaintenanceGas = 1
-	ctx = k.ReserveOrdinaryGas(ctx, 200_000_000)
-	require.NotPanics(t, func() { ctx = k.EndBlock(ctx, 200_000_000) })
+	ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
+	require.NotPanics(t, func() { ctx = k.EndBlock(ctx, 400_000_000) })
 }
 func TestPersistentContractRoundRobin(t *testing.T) {
 	ctx, k, _ := setup(t)
@@ -71,7 +71,7 @@ func TestPersistentContractRoundRobin(t *testing.T) {
 		k.save(ctx, *p)
 	}
 	for _, want := range []uint64{1, 3, 2} {
-		selected, stop := k.selectReady(ctx, 50_000_000)
+		selected, stop := k.selectReady(ctx, 90_000_000)
 		require.False(t, stop)
 		require.NotNil(t, selected)
 		require.Equal(t, want, selected.ID)

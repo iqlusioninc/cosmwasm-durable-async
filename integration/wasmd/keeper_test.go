@@ -15,7 +15,9 @@ import (
 )
 
 func testConfig() Config {
-	return Config{Denom: "ugas", GasPrice: sdkmath.LegacyMustNewDecFromStr("0.001"), MaxPollGas: 10_000_000, AsyncGas: 100_000_000, MaintenanceGas: 40_000_000, HostReserve: 20_000_000, MaxTasks: 100, MaxBytes: 10_000_000, MaxLifetime: 10_000, MaxMessages: 10, MaxVisits: 20, MaxMaintenance: 20, StorageByteBlockPrice: sdkmath.ZeroInt(), CleanupPrice: sdkmath.NewInt(100)}
+	c := ExperimentalConfig()
+	c.StorageByteBlockPrice = sdkmath.ZeroInt()
+	return c
 }
 func setup(t *testing.T) (sdk.Context, *Keeper, wasmkeeper.TestKeepers) {
 	t.Helper()
@@ -38,6 +40,10 @@ func TestGoldenABI(t *testing.T) {
 			require.NoError(t, e)
 			var round []byte
 			switch filepath.Base(f) {
+			case "task-runnable.json", "task-paused.json", "task-completed.json", "task-failed.json", "task-expired.json":
+				var p TaskResponse
+				require.NoError(t, json.Unmarshal(b, &p))
+				round = marshal(p)
 			case "complete.json", "failed.json", "pending-height.json", "pending-operation.json":
 				var p PollResponse
 				require.NoError(t, json.Unmarshal(b, &p))
@@ -66,6 +72,18 @@ func TestGoldenABI(t *testing.T) {
 				}
 				require.NoError(t, json.Unmarshal(b, &p))
 				round = marshal(p)
+			case "extend-lease.json":
+				var p struct {
+					ExtendLease ExtendLeaseMsg `json:"extend_lease"`
+				}
+				require.NoError(t, json.Unmarshal(b, &p))
+				round = marshal(p)
+			case "update-budget.json":
+				var p struct {
+					UpdateBudget UpdateBudgetMsg `json:"update_budget"`
+				}
+				require.NoError(t, json.Unmarshal(b, &p))
+				round = marshal(p)
 			default:
 				t.Fatalf("unhandled ABI fixture %s", f)
 			}
@@ -90,7 +108,7 @@ func TestRealWasmOutboundRollback(t *testing.T) {
 	init := marshal(map[string]any{"payment_service": payment.String(), "shipment_service": shipment.String(), "deadline_blocks": 10, "fee_denom": "ugas"})
 	owner, _, e := keepers.ContractKeeper.Instantiate(ctx, id, creator, creator, init, "native-async", sdk.Coins{})
 	require.NoError(t, e)
-	start := marshal(map[string]any{"Start": map[string]any{"order": map[string]any{"id": 9}, "business": sdk.NewInt64Coin("ugas", 0), "gas": sdk.NewInt64Coin("ugas", 1_000_000), "gas_per_poll": 10_000_000, "max_gas_price": "1", "expires_at": 100, "allocated_bytes": 131072}})
+	start := marshal(map[string]any{"Start": map[string]any{"order": map[string]any{"id": 9}, "business": sdk.NewInt64Coin("ugas", 0), "gas": sdk.NewInt64Coin("ugas", 1_000_000), "gas_per_poll": 100_000_000, "max_gas_price": "1", "expires_at": 100, "allocated_bytes": 524288}})
 	// No service deployed yet: this intentionally exercises real Wasm writes plus
 	// outbound failure rollback and paid retry, then keeper-delivered results.
 	_, e = keepers.ContractKeeper.Execute(ctx, owner, creator, start, sdk.NewCoins(sdk.NewInt64Coin("ugas", 1_000_000)))
@@ -99,17 +117,18 @@ func TestRealWasmOutboundRollback(t *testing.T) {
 	require.NoError(t, e)
 	require.Equal(t, "runnable", task.Status)
 	before := amount(task.Escrow)
-	ctx = k.ReserveOrdinaryGas(ctx, 200_000_000)
-	ctx = k.EndBlock(ctx, 200_000_000)
+	ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
+	ctx = k.EndBlock(ctx, 400_000_000)
 	task, e = k.load(ctx, owner.String(), 1)
 	require.NoError(t, e)
 	require.False(t, task.Started, "registration cannot poll at H")
 	ctx = ctx.WithBlockHeight(11).WithGasMeter(storetypes.NewInfiniteGasMeter())
-	ctx = k.ReserveOrdinaryGas(ctx, 200_000_000)
-	ctx = k.EndBlock(ctx, 200_000_000)
+	ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
+	ctx = k.EndBlock(ctx, 400_000_000)
 	task, e = k.load(ctx, owner.String(), 1)
 	require.NoError(t, e)
 	require.Equal(t, "paused", task.Status)
+	require.Equal(t, "message_failure", task.Pause)
 	require.False(t, task.Started, "outbound failure must roll back the staged continuation")
 	require.True(t, amount(task.Escrow).LT(before))
 	require.True(t, amount(task.Fees).IsPositive())
@@ -137,13 +156,13 @@ func TestRealWasmTwoWaitCompletion(t *testing.T) {
 	payment := deploy("../../artifacts/native_service.wasm", []byte(`{}`))
 	shipment := deploy("../../artifacts/native_service.wasm", []byte(`{}`))
 	owner := deploy("../../artifacts/native_fulfill_example.wasm", marshal(map[string]any{"payment_service": payment.String(), "shipment_service": shipment.String(), "deadline_blocks": 10, "fee_denom": "ugas"}))
-	start := marshal(map[string]any{"Start": map[string]any{"order": map[string]any{"id": 9}, "business": sdk.NewInt64Coin("ugas", 0), "gas": sdk.NewInt64Coin("ugas", 1_000_000), "gas_per_poll": 10_000_000, "max_gas_price": "1", "expires_at": 100, "allocated_bytes": 131072}})
+	start := marshal(map[string]any{"Start": map[string]any{"order": map[string]any{"id": 9}, "business": sdk.NewInt64Coin("ugas", 0), "gas": sdk.NewInt64Coin("ugas", 1_000_000), "gas_per_poll": 100_000_000, "max_gas_price": "1", "expires_at": 100, "allocated_bytes": 524288}})
 	_, e := keepers.ContractKeeper.Execute(ctx, owner, creator, start, sdk.NewCoins(sdk.NewInt64Coin("ugas", 1_000_000)))
 	require.NoError(t, e)
 	block := func(h int64) {
 		ctx = ctx.WithBlockHeight(h).WithGasMeter(storetypes.NewInfiniteGasMeter())
-		ctx = k.ReserveOrdinaryGas(ctx, 200_000_000)
-		ctx = k.EndBlock(ctx, 200_000_000)
+		ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
+		ctx = k.EndBlock(ctx, 400_000_000)
 		ctx = ctx.WithGasMeter(storetypes.NewInfiniteGasMeter())
 	}
 	block(11)

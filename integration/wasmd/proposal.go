@@ -12,11 +12,15 @@ import (
 func (k *Keeper) ProposalHandlers(decode sdk.TxDecoder, prepare sdk.PrepareProposalHandler, process sdk.ProcessProposalHandler) (sdk.PrepareProposalHandler, sdk.ProcessProposalHandler) {
 	budget := func(ctx sdk.Context) (sdk.Context, uint64, error) {
 		p := ctx.ConsensusParams()
-		if p.Block == nil || p.Block.MaxGas <= 0 || uint64(p.Block.MaxGas) <= k.Config.AsyncGas {
+		if p.Block == nil || p.Block.MaxGas <= 0 {
 			return ctx, 0, fmt.Errorf("native async requires a finite block gas limit greater than its reserve")
 		}
+		ordinary, err := k.Config.OrdinaryGas(uint64(p.Block.MaxGas))
+		if err != nil {
+			return ctx, 0, err
+		}
 		b := *p.Block
-		b.MaxGas -= int64(k.Config.AsyncGas)
+		b.MaxGas = int64(ordinary)
 		p.Block = &b
 		return ctx.WithConsensusParams(p), uint64(b.MaxGas), nil
 	}

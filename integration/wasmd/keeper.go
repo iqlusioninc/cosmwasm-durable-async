@@ -24,6 +24,7 @@ type Bank interface {
 	SendCoins(context.Context, sdk.AccAddress, sdk.AccAddress, sdk.Coins) error
 }
 type Config struct {
+	ModuleEndBlockGas                                                       uint64
 	Denom                                                                   string
 	GasPrice                                                                sdkmath.LegacyDec
 	MaxPollGas, AsyncGas, MaintenanceGas, HostReserve                       uint64
@@ -69,6 +70,20 @@ func (k *Keeper) load(ctx sdk.Context, owner string, id uint64) (Task, error) {
 	return t, nil
 }
 func (k *Keeper) save(ctx sdk.Context, t Task) { k.store(ctx).Set(taskKey(t.Owner, t.ID), marshal(t)) }
+
+// Maximum mutable scalar widths, queue metadata, and bounded diagnostics fit
+// the fixed 1024-byte slack. Inbox space is reserved independently of readiness.
+func (k *Keeper) checkQuota(t Task) error {
+	extra := uint64(1024)
+	if t.Wait != nil && t.Wait.Operation != nil {
+		extra += uint64(t.Wait.Operation.MaxResultBytes)*6 + 128
+	}
+	t.Inbox = nil
+	if uint64(len(marshal(t)))+extra > t.AllocatedBytes {
+		return fmt.Errorf("state exceeds prepaid allocation including metadata and inbox reserve")
+	}
+	return nil
+}
 func terminal(t Task) bool {
 	return t.Status == "completed" || t.Status == "failed" || t.Status == "cancelled" || t.Status == "expired"
 }
@@ -215,7 +230,7 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	if e != nil || price.IsNegative() {
 		return 0, fmt.Errorf("invalid price")
 	}
-	if r.GasPerPoll == 0 || r.GasPerPoll > c.MaxPollGas || r.ExpiresAt <= height || r.ExpiresAt-height > c.MaxLifetime || r.AllocatedBytes < 1024 || r.AllocatedBytes > c.MaxBytes || uint64(len(r.Program.Input)) > r.AllocatedBytes/2 || len(r.Program.Kind) > 128 || r.Program.Kind == "" {
+	if r.GasPerPoll <= c.HostReserve || r.GasPerPoll > c.MaxPollGas || r.ExpiresAt <= height || r.ExpiresAt-height > c.MaxLifetime || r.AllocatedBytes < 1024 || r.AllocatedBytes > c.MaxBytes || uint64(len(r.Program.Input)) > r.AllocatedBytes/2 || len(r.Program.Kind) > 128 || r.Program.Kind == "" {
 		return 0, fmt.Errorf("invalid limits")
 	}
 	// Fixed-size banking plus two bounded JSON task writes must fit the host
@@ -241,7 +256,7 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	code := k.Wasm.GetCodeInfo(ctx, ci.CodeID)
 	lease := c.StorageByteBlockPrice.Mul(sdkmath.NewIntFromUint64(r.AllocatedBytes)).Mul(sdkmath.NewIntFromUint64(r.ExpiresAt - height)).Add(c.CleanupPrice)
-	if r.Funds.Amount.LT(lease.Add(k.fee(r.GasPerPoll + c.HostReserve))) {
+	if r.Funds.Amount.LT(lease.Add(k.fee(r.GasPerPoll))) {
 		return 0, fmt.Errorf("insufficient prepaid lease and execution funding")
 	}
 	id := number(s, "next_id")
@@ -249,13 +264,14 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 		return 0, fmt.Errorf("id exhausted")
 	}
 	id++
+	t := Task{ID: id, Owner: owner.String(), Register: r, Checksum: code.CodeHash, Status: "runnable", Escrow: r.Funds.Amount.Sub(lease).String(), Fees: "0", Reserved: "0", LeasePaid: lease.String()}
+	if e:=k.checkQuota(t);e!=nil{return 0,e}
 	if e := k.transfer(ctx, owner, authtypes.NewModuleAddress(ModuleName), r.Funds.Amount); e != nil {
 		return 0, e
 	}
 	if e := k.transfer(ctx, authtypes.NewModuleAddress(ModuleName), authtypes.NewModuleAddress(authtypes.FeeCollectorName), lease); e != nil {
 		return 0, e
 	}
-	t := Task{ID: id, Owner: owner.String(), Register: r, Checksum: code.CodeHash, Status: "runnable", Escrow: r.Funds.Amount.Sub(lease).String(), Fees: "0", Reserved: "0", LeasePaid: lease.String()}
 	t.ExpiryKey = indexKey("expiry", r.ExpiresAt, id, t.Owner)
 	s.Set(t.ExpiryKey, taskKey(t.Owner, id))
 	k.enqueue(ctx, &t, height+1)
@@ -282,12 +298,18 @@ func (k *Keeper) Deliver(ctx sdk.Context, owner string, id, sequence uint64, res
 		return fmt.Errorf("stale or duplicate resolution")
 	}
 	w := t.Wait.Operation
-	if resolver != w.Resolver || uint64(ctx.BlockHeight()) >= w.Deadline || uint64(len(marshal(r))) > uint64(w.MaxResultBytes) {
+	resultBytes := uint64(0)
+	if r.Success != nil {
+		resultBytes = uint64(len(r.Success.Data))
+	} else {
+		resultBytes = uint64(len(r.Error.Code)) + uint64(len(r.Error.Message))
+	}
+	if resolver != w.Resolver || uint64(ctx.BlockHeight()) >= w.Deadline || resultBytes > uint64(w.MaxResultBytes) {
 		return fmt.Errorf("unauthorized, late or oversized resolution")
 	}
 	t.Inbox = &r
-	if uint64(len(marshal(t)))+1024 > t.AllocatedBytes {
-		return fmt.Errorf("inbox exceeds prepaid allocation including metadata reserve")
+	if e := k.checkQuota(t); e != nil {
+		return e
 	}
 	if t.Status != "paused" {
 		t.Status = "runnable"
@@ -320,7 +342,7 @@ func (k *Keeper) Management(ctx sdk.Context, owner string, raw json.RawMessage) 
 		if e != nil {
 			return e
 		}
-		if current, ok := ctx.Value(pollingKey{}).(string); ok && current == string(taskKey(owner, a.TaskID)) {
+		if current, ok := ctx.Value(pollingKey{}).(string); kind != "fund_task" && ok && current == string(taskKey(owner, a.TaskID)) {
 			return fmt.Errorf("cannot manage an in-flight task")
 		}
 		switch kind {
@@ -328,7 +350,7 @@ func (k *Keeper) Management(ctx sdk.Context, owner string, raw json.RawMessage) 
 			if !a.Funds.IsValid() || !a.Funds.IsPositive() || a.Funds.Denom != k.Config.Denom {
 				return fmt.Errorf("invalid deposit")
 			}
-			if amount(t.Escrow).Add(a.Funds.Amount).BigInt().BitLen() > 128 {
+			if amount(t.Escrow).Add(amount(t.Reserved)).Add(a.Funds.Amount).BigInt().BitLen() > 128 {
 				return fmt.Errorf("escrow overflow")
 			}
 			if e = k.transfer(ctx, addr(owner), authtypes.NewModuleAddress(ModuleName), a.Funds.Amount); e != nil {
@@ -346,7 +368,7 @@ func (k *Keeper) Management(ctx sdk.Context, owner string, raw json.RawMessage) 
 				return fmt.Errorf("unauthorized or not paused")
 			}
 			p, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
-			if p.LT(k.Config.GasPrice) || amount(t.Escrow).LT(k.fee(t.GasPerPoll+k.Config.HostReserve)) {
+			if p.LT(k.Config.GasPrice) || amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
 				return fmt.Errorf("insufficient funds or price limit")
 			}
 			t.Pause = ""
@@ -435,15 +457,17 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
+	response := publicTask(t)
 	if !terminal(t) && uint64(ctx.BlockHeight()) >= t.ExpiresAt {
 		t.Status = "expired"
+		response.Status = TaskStatus{Kind: "expired"}
 	}
 	if q["task_funding"] != nil {
 		var status any = t.Status
 		if t.Status == "paused" {
 			reason := "trap"
 			switch t.Pause {
-			case "price_limit", "insufficient_funds", "out_of_gas":
+			case "price_limit", "insufficient_funds", "out_of_gas", "message_failure", "invalid_response":
 				reason = t.Pause
 			}
 			resume := "runnable"
@@ -452,9 +476,9 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 			}
 			status = map[string]any{"paused": map[string]any{"reason": reason, "resume": resume}}
 		}
-		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(t.GasPerPoll + k.Config.HostReserve).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
+		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
 	}
-	return marshal(t), nil
+	return marshal(response), nil
 }
 
 // CheckMigration must be called by the application's migration entry point for

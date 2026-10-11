@@ -16,17 +16,23 @@ type pollingKey struct{}
 // ReserveOrdinaryGas is a keeper-harness helper. Production applications MUST
 // install ProposalHandlers; BaseApp resets its block meter after BeginBlock.
 func (k *Keeper) ReserveOrdinaryGas(ctx sdk.Context, total uint64) sdk.Context {
-	if total <= k.Config.AsyncGas {
-		panic("async allocation exceeds block gas")
+	budget, err := k.Config.OrdinaryGas(total)
+	if err != nil {
+		panic(err)
 	}
-	return ctx.WithBlockGasMeter(storetypes.NewGasMeter(total - k.Config.AsyncGas))
+	return ctx.WithBlockGasMeter(storetypes.NewGasMeter(budget))
 }
 
 // EndBlock must be called exactly once after ordinary txs and before the app's
 // remaining EndBlock modules. total is the consensus maximum block gas.
 func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
+	originalMeter := ctx.GasMeter()
+	budget, err := k.Config.OrdinaryGas(total)
+	if err != nil {
+		panic(err)
+	}
 	ordinary := ctx.BlockGasMeter().GasConsumedToLimit()
-	if ordinary > total-k.Config.AsyncGas {
+	if ordinary > budget {
 		panic("ordinary transactions exceeded reserved partition")
 	}
 	block := ctx.BlockGasMeter()
@@ -59,7 +65,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 		block.ConsumeGas(consumed, "native async attempt")
 	}
 	block.ConsumeGas(meter.GasConsumedToLimit(), "native async maintenance")
-	return ctx.WithValue(schedulerKey{}, false)
+	return ctx.WithValue(schedulerKey{}, false).WithGasMeter(originalMeter)
 }
 
 // Every bounded maintenance visit is independently atomic. Exhaustion discards
@@ -107,7 +113,7 @@ func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64) (*Task, bool) {
 	if e := json.Unmarshal(b, &t); e != nil {
 		panic(e)
 	}
-	if t.GasPerPoll+k.Config.HostReserve > remaining {
+	if t.GasPerPoll > remaining {
 		return nil, true
 	}
 	k.store(ctx).Delete(key)
@@ -129,7 +135,7 @@ func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64) (*Task, bool) {
 		k.save(ctx, t)
 		return nil, false
 	}
-	if amount(t.Escrow).LT(k.fee(t.GasPerPoll + k.Config.HostReserve)) {
+	if amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
 		t.Status = "paused"
 		t.Pause = "insufficient_funds"
 		k.save(ctx, t)
@@ -281,52 +287,55 @@ func (k *Keeper) stage(ctx sdk.Context, t *Task, r PollResponse) error {
 		t.State = []byte(r.Outcome.Fail.Error)
 		t.Status = "failing"
 	}
-	extra := uint64(1024)
-	if t.Wait != nil && t.Wait.Operation != nil {
-		extra += uint64(t.Wait.Operation.MaxResultBytes)
-	}
-	if uint64(len(marshal(*t)))+extra > t.AllocatedBytes {
-		return fmt.Errorf("state exceeds prepaid allocation including metadata reserve")
+	if err := k.checkQuota(*t); err != nil {
+		return err
 	}
 	k.save(ctx, *t)
 	return nil
 }
+
+type pollFailure struct {
+	Reason string
+	Cause  error
+}
+
+func (e pollFailure) Error() string { return e.Cause.Error() }
 func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			switch p.(type) {
 			case storetypes.ErrorOutOfGas:
-				err = fmt.Errorf("out_of_gas")
+				err = pollFailure{"out_of_gas", fmt.Errorf("poll exhausted its execution slice")}
 			default:
 				panic(p)
 			}
 		}
 	}()
-	reserve := k.fee(t.GasPerPoll + k.Config.HostReserve)
+	reserve := k.fee(t.GasPerPoll)
 	t.Reserved = reserve.String()
 	t.Escrow = amount(t.Escrow).Sub(reserve).String()
 	k.save(ctx, *t)
 	if err = k.checkIdentity(ctx, *t); err != nil {
-		return err
+		return pollFailure{"invalid_response", err}
 	}
 	data, err := k.Wasm.Sudo(ctx, addr(t.Owner), t.Request())
 	if err != nil {
-		return err
+		return pollFailure{"trap", err}
 	}
 	if uint64(len(data)) > t.AllocatedBytes {
-		return fmt.Errorf("poll response exceeds allocated bytes")
+		return pollFailure{"invalid_response", fmt.Errorf("poll response exceeds allocated bytes")}
 	}
 	var response PollResponse
 	if err = json.Unmarshal(data, &response); err != nil {
-		return err
+		return pollFailure{"invalid_response", err}
 	}
 	if err = k.stage(ctx, t, response); err != nil {
-		return err
+		return pollFailure{"invalid_response", err}
 	}
 	for _, m := range response.Messages {
 		events, _, _, e := k.messenger.DispatchMsg(ctx, addr(t.Owner), "", m)
 		if e != nil {
-			return fmt.Errorf("message_failure: %w", e)
+			return pollFailure{"message_failure", e}
 		}
 		ctx.EventManager().EmitEvents(events)
 	}
@@ -336,7 +345,7 @@ func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 }
 func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	child, commit := parent.CacheContext()
-	execution := storetypes.NewGasMeter(old.GasPerPoll)
+	execution := storetypes.NewGasMeter(old.GasPerPoll - k.Config.HostReserve)
 	child = child.WithGasMeter(execution).WithValue(pollingKey{}, string(taskKey(old.Owner, old.ID)))
 	t := old
 	t.LastPoll = uint64(parent.BlockHeight())
@@ -351,9 +360,13 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 		t = old
 		t.LastPoll = uint64(parent.BlockHeight())
 		t.Status = "paused"
-		t.Pause = err.Error()
-		if len(t.Pause) > 64 {
-			t.Pause = t.Pause[:64]
+		t.Pause = "trap"
+		if failure, ok := err.(pollFailure); ok {
+			t.Pause = failure.Reason
+		}
+		t.Diagnostic = err.Error()
+		if len(t.Diagnostic) > 64 {
+			t.Diagnostic = t.Diagnostic[:64]
 		}
 		t.QueueKey = nil
 	}
@@ -361,7 +374,11 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	k.save(accounting, t)
 	charged := execution.GasConsumedToLimit() + host.GasConsumedToLimit()
 	fee := k.fee(charged)
-	t.Escrow = amount(old.Escrow).Sub(fee).String()
+	if err == nil {
+		t.Escrow = amount(t.Escrow).Add(amount(t.Reserved)).Sub(fee).String()
+	} else {
+		t.Escrow = amount(old.Escrow).Sub(fee).String()
+	}
 	t.Reserved = "0"
 	t.Fees = amount(t.Fees).Add(fee).String()
 	// The final transfer/update are maintenance work, paid by the prepaid cleanup
@@ -380,5 +397,6 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	} else {
 		k.save(accounting, t)
 	}
+	parent.EventManager().EmitEvent(sdk.NewEvent("async_poll", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("execution_gas", fmt.Sprint(execution.GasConsumedToLimit())), sdk.NewAttribute("charged_host_gas", fmt.Sprint(charged-execution.GasConsumedToLimit())), sdk.NewAttribute("maintenance_host_gas", fmt.Sprint(host.GasConsumedToLimit()-(charged-execution.GasConsumedToLimit()))), sdk.NewAttribute("total_gas", fmt.Sprint(execution.GasConsumedToLimit()+host.GasConsumedToLimit())), sdk.NewAttribute("fee", fee.String()), sdk.NewAttribute("pause_reason", t.Pause)))
 	return execution.GasConsumedToLimit() + host.GasConsumedToLimit()
 }
