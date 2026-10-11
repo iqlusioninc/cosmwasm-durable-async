@@ -128,7 +128,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
         );
         inputs.push(binding);
     }
-    if crate::flow::needed(&item.block) {
+    if crate::flow::needed(&item.block, &context) {
         let (flow, waits) = crate::flow::lower(&item.block, &context, &inputs)?;
         return Ok(ParsedWorkflow {
             item,

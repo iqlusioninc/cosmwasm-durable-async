@@ -106,16 +106,13 @@ impl Scope {
     }
 }
 
-pub(crate) fn needed(block: &syn::Block) -> bool {
-    struct Detect {
+pub(crate) fn needed(block: &syn::Block, context: &Ident) -> bool {
+    struct Detect<'c> {
+        context: &'c Ident,
         depth: usize,
         found: bool,
     }
-    impl<'a> Visit<'a> for Detect {
-        fn visit_expr_method_call(&mut self, e: &'a syn::ExprMethodCall) {
-            self.found |= e.method == "call";
-            visit::visit_expr_method_call(self, e);
-        }
+    impl<'a> Visit<'a> for Detect<'_> {
         fn visit_expr_if(&mut self, e: &'a syn::ExprIf) {
             self.depth += 1;
             visit::visit_expr_if(self, e);
@@ -129,10 +126,13 @@ pub(crate) fn needed(block: &syn::Block) -> bool {
         }
         fn visit_expr_await(&mut self, e: &'a syn::ExprAwait) {
             self.found |= self.depth > 0;
+            self.found |=
+                parse::wait_expression(&e.base, self.context).is_ok_and(|(_, _, _, child)| child);
             visit::visit_expr_await(self, e);
         }
     }
     let mut detect = Detect {
+        context,
         depth: 0,
         found: false,
     };
