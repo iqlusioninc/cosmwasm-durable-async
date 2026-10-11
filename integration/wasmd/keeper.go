@@ -475,19 +475,7 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 		response.Status = TaskStatus{Kind: "expired"}
 	}
 	if q["task_funding"] != nil {
-		var status any = t.Status
-		if t.Status == "paused" {
-			reason := "trap"
-			switch t.Pause {
-			case "price_limit", "insufficient_funds", "out_of_gas", "message_failure", "invalid_response":
-				reason = t.Pause
-			}
-			resume := "runnable"
-			if t.Wait != nil && t.Inbox == nil {
-				resume = "waiting"
-			}
-			status = map[string]any{"paused": map[string]any{"reason": reason, "resume": resume}}
-		}
+		status := response.Status
 		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
 	}
 	return marshal(response), nil

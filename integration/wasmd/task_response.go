@@ -55,6 +55,10 @@ func (s *TaskStatus) UnmarshalJSON(b []byte) error {
 
 // TaskResponse excludes internal indexes and financial bookkeeping. Optional
 // execution fields always serialize, with null distinguishing absent Binary.
+// Reentrant queries during outbound dispatch expose a candidate in-flight view:
+// output/error may be staged while status remains nonterminal. Settlement and
+// refunds are final only when the poll commits; dispatch failure rolls back the
+// staged payload. Funding queries retain the active escrow reservation meanwhile.
 type TaskResponse struct {
 	Contract       string      `json:"contract"`
 	TaskID         uint64      `json:"task_id"`
@@ -92,9 +96,9 @@ func publicTask(t Task) TaskResponse {
 		r.LastAttempt = &h
 	}
 	switch t.Status {
-	case "completed":
+	case "completed", "completing":
 		r.Output = presentBinary(t.State)
-	case "failed":
+	case "failed", "failing":
 		e := string(t.State)
 		r.Error = &e
 	case "cancelled", "expired":
@@ -102,6 +106,11 @@ func publicTask(t Task) TaskResponse {
 		if t.Started {
 			r.State = presentBinary(t.State)
 		}
+	}
+	// Staged terminal outcomes remain runnable until outbound dispatch and fee
+	// settlement succeed. Candidate payloads never masquerade as continuations.
+	if t.Status == "completing" || t.Status == "failing" {
+		r.Status = TaskStatus{Kind: "runnable"}
 	}
 	if t.Status == "paused" {
 		r.Status.Reason = t.Pause
