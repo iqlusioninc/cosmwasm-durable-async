@@ -414,6 +414,18 @@ func (k *Keeper) Options() []wasmkeeper.Option {
 					}
 				case envelope["funding"] != nil:
 					e = k.Management(ctx, owner.String(), envelope["funding"])
+				case envelope["extend_lease"] != nil:
+					var r ExtendLeaseMsg
+					e = json.Unmarshal(envelope["extend_lease"], &r)
+					if e == nil {
+						e = k.ExtendLease(ctx, owner.String(), r)
+					}
+				case envelope["update_budget"] != nil:
+					var r UpdateBudgetMsg
+					e = json.Unmarshal(envelope["update_budget"], &r)
+					if e == nil {
+						e = k.UpdateBudget(ctx, owner.String(), r)
+					}
 				case envelope["deliver"] != nil:
 					var d DeliverMsg
 					e = json.Unmarshal(envelope["deliver"], &d)
