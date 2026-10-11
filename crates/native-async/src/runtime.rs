@@ -809,7 +809,11 @@ impl Runtime {
             let n = number(s, &key)?
                 .checked_sub(1)
                 .ok_or_else(|| err("task count underflow"))?;
-            put(s, &key, &n)?;
+            if n == 0 && key == count_key(&t.contract) {
+                s.remove(&key);
+            } else {
+                put(s, &key, &n)?;
+            }
         }
         timed(s, b"na2/prune/", t.retain_until, t)?;
         Ok(())

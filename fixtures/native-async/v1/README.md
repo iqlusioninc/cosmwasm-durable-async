@@ -7,3 +7,5 @@ The initial poll uses wait sequence 0. A newly created first wait uses sequence 
 Consumers should decode into their actual protocol types and re-encode to semantically identical JSON. They must not compare two untyped JSON decoders and call that cross-language ABI validation.
 
 The `task-*.json` files encode the public `TaskResponse`, including nullable execution fields and structured paused status. They intentionally replace backend-specific task storage JSON before release. Retention heights in fixtures are illustrative; each backend reports its actual retention policy.
+
+`../decimal-domain.json` pins the shared `TaskFunding` Decimal maximum and two overflow policies. Go compares the accepted real funding-query response with the complete fixture (substituting only the harness addresses), and Rust decodes that fixture into `TaskFunding`. Its negative cases must be rejected by both Go registration/budget updates and Rust typed decoding.

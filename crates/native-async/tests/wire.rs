@@ -1,6 +1,29 @@
 use native_async::{PollResponse, RuntimeMsg, TaskResponse, TaskSudoMsg};
 use serde::{de::DeserializeOwned, Serialize};
 
+#[test]
+fn go_funding_query_decimal_boundaries_decode_through_typed_rust_abi() {
+    let cases: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../fixtures/native-async/decimal-domain.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let funding = serde_json::from_value::<native_async::TaskFunding>(case["funding"].clone());
+        assert_eq!(
+            funding.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+        if case["valid"] == true {
+            assert_eq!(
+                funding.unwrap().max_gas_price.atomics(),
+                cosmwasm_std::Uint128::MAX
+            );
+        }
+    }
+}
+
 fn roundtrip<T: DeserializeOwned + Serialize>(bytes: &[u8]) {
     let typed: T = serde_json::from_slice(bytes).unwrap();
     let original: serde_json::Value = serde_json::from_slice(bytes).unwrap();

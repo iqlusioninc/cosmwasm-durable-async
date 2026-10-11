@@ -215,7 +215,11 @@ func (k *Keeper) finish(ctx sdk.Context, t *Task, status string) error {
 	t.Escrow = "0"
 	setNumber(s, "active", number(s, "active")-1)
 	key := "active/" + t.Owner
-	setNumber(s, key, number(s, key)-1)
+	if remaining := number(s, key) - 1; remaining == 0 {
+		s.Delete([]byte(key))
+	} else {
+		setNumber(s, key, remaining)
+	}
 	// A bounded terminal record is retained only to the prepaid lease endpoint.
 	t.ExpiryKey = indexKey("prune", t.ExpiresAt, t.ID, t.Owner)
 	s.Set(t.ExpiryKey, taskKey(t.Owner, t.ID))
@@ -226,9 +230,8 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	c := k.Config
 	s := k.store(ctx)
 	height := uint64(ctx.BlockHeight())
-	price, e := sdkmath.LegacyNewDecFromStr(r.MaxGasPrice)
-	if e != nil || price.IsNegative() {
-		return 0, fmt.Errorf("invalid price")
+	if err := validateMaxGasPrice(r.MaxGasPrice); err != nil {
+		return 0, err
 	}
 	if r.GasPerPoll <= c.HostReserve || r.GasPerPoll > c.MaxPollGas || r.ExpiresAt <= height || r.ExpiresAt-height > c.MaxLifetime || r.AllocatedBytes < 1024 || r.AllocatedBytes > c.MaxBytes || uint64(len(r.Program.Input)) > r.AllocatedBytes/2 || len(r.Program.Kind) > 128 || r.Program.Kind == "" {
 		return 0, fmt.Errorf("invalid limits")
@@ -242,10 +245,11 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	if number(s, "active") >= c.MaxTasks || number(s, "bytes") > c.MaxBytes-r.AllocatedBytes {
 		return 0, fmt.Errorf("admission full")
 	}
-	for _, a := range []string{r.Control, r.Refund} {
-		if _, e := sdk.AccAddressFromBech32(a); e != nil {
-			return 0, e
-		}
+	if _, err := sdk.AccAddressFromBech32(r.Control); err != nil {
+		return 0, err
+	}
+	if _, err := validateRefund(r.Refund); err != nil {
+		return 0, err
 	}
 	if !r.Funds.IsValid() || !r.Funds.IsPositive() || r.Funds.Denom != c.Denom || r.Funds.Amount.BigInt().BitLen() > 128 {
 		return 0, fmt.Errorf("invalid funding")

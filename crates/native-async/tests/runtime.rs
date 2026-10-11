@@ -1455,6 +1455,65 @@ fn cancellation_churn_removes_empty_ring_before_releasing_storage() {
 }
 
 #[test]
+fn last_active_task_removes_owner_count_and_pruning_keeps_ids() {
+    let (rt, api, mut s, a, mut host) = setup();
+    let b = api.addr_make("other-contract");
+    s.set(
+        format!("bank/{b}").as_bytes(),
+        &cosmwasm_std::to_json_binary(&Uint128::new(10000)).unwrap(),
+    );
+    let a1 = register(&rt, &api, &mut s, &a, &mut host);
+    let a2 = register(&rt, &api, &mut s, &a, &mut host);
+    let b1 = register(&rt, &api, &mut s, &b, &mut host);
+    let count = |c: &Addr| [b"na2/count/".as_slice(), c.as_bytes()].concat();
+    for (owner, id) in [(&a, a1), (&b, b1), (&a, a2)] {
+        rt.manage(
+            &api,
+            &mut s,
+            2,
+            owner,
+            SchedulerMsg::CancelTask {
+                task_id: id,
+                actor: owner.to_string(),
+            },
+            &mut host,
+        )
+        .unwrap();
+        if owner == &a && id == a1 {
+            assert_eq!(
+                cosmwasm_std::from_json::<u64>(s.get(&count(&a)).unwrap()).unwrap(),
+                1
+            );
+        } else {
+            assert!(
+                s.get(&count(owner)).is_none(),
+                "last task left an empty owner count"
+            );
+        }
+    }
+    assert_eq!(rt.run_block(&mut s, 22, &mut host).unwrap().prunes, 3);
+    for prefix in [
+        b"na2/count/".as_slice(),
+        b"na2/task/",
+        b"na2/prune/",
+        b"na2/expiry/",
+        b"na2/ring/",
+        b"na2/member/",
+        b"na2/ready/",
+        b"native-async/v1/task/",
+    ] {
+        assert!(
+            !s.range(None, None, cosmwasm_std::Order::Ascending)
+                .any(|(key, _)| key.starts_with(prefix)),
+            "leftover index {}",
+            String::from_utf8_lossy(prefix)
+        );
+    }
+    assert_eq!(register(&rt, &api, &mut s, &a, &mut host), a2 + 1);
+    assert_eq!(register(&rt, &api, &mut s, &b, &mut host), b1 + 1);
+}
+
+#[test]
 fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
     let quota = minimum_quota();
     let (rt, api, mut s, c, mut host) = setup();

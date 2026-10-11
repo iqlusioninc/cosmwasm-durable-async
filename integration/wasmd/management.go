@@ -3,14 +3,11 @@ package async
 import (
 	"fmt"
 	"math/big"
-	"regexp"
 
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 )
-
-var policyDecimal = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,18})?$`)
 
 // controlledTask is called only with the authenticated owning contract from the
 // custom-message dispatcher. The contract must forward its actual caller as actor.
@@ -102,23 +99,16 @@ func (k *Keeper) UpdateBudget(ctx sdk.Context, owner string, r UpdateBudgetMsg) 
 	if err != nil {
 		return err
 	}
-	refund, err := sdk.AccAddressFromBech32(r.Refund)
+	refund, err := validateRefund(r.Refund)
 	if err != nil {
 		return err
-	}
-	if refund.Equals(authtypes.NewModuleAddress(ModuleName)) {
-		return fmt.Errorf("escrow cannot receive refunds")
 	}
 	if r.GasPerPoll <= k.Config.HostReserve || r.GasPerPoll > k.Config.MaxPollGas ||
 		k.Config.MaintenanceGas >= k.Config.AsyncGas || r.GasPerPoll > k.Config.AsyncGas-k.Config.MaintenanceGas {
 		return fmt.Errorf("invalid poll gas cap")
 	}
-	if !policyDecimal.MatchString(r.MaxGasPrice) {
-		return fmt.Errorf("invalid maximum gas price")
-	}
-	price, err := sdkmath.LegacyNewDecFromStr(r.MaxGasPrice)
-	if err != nil || price.BigInt().BitLen() > 128 {
-		return fmt.Errorf("maximum gas price exceeds Decimal bounds")
+	if err = validateMaxGasPrice(r.MaxGasPrice); err != nil {
+		return err
 	}
 	// Use unbounded intermediates to reject overflow rather than panic inside SDK math.
 	scaled := new(big.Int).Mul(k.Config.GasPrice.BigInt(), new(big.Int).SetUint64(r.GasPerPoll))
