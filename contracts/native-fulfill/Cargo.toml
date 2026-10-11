@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 name = "native_service"
 crate-type = ["cdylib"]
 
+[[example]]
+name = "native_fault"
+crate-type = ["cdylib"]
+
 [dependencies]
 durable-runtime = { workspace = true, features = ["native"] }
 durable-macro.workspace = true
