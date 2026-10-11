@@ -1514,3 +1514,75 @@ fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
         }
     }
 }
+
+#[test]
+fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_state() {
+    #[derive(serde::Deserialize)]
+    struct Boundary {
+        name: String,
+        max_result_bytes: u32,
+        resolution: Resolution,
+        accepted: bool,
+    }
+    let cases: Vec<Boundary> = serde_json::from_slice(include_bytes!(
+        "../../../integration/wasmd/testdata/result-boundaries.json"
+    ))
+    .unwrap();
+    assert!(!cases.is_empty());
+    for case in cases {
+        let (rt, api, mut store, contract, mut host) = setup();
+        let id = register(&rt, &api, &mut store, &contract, &mut host);
+        host.outcome = PollOutcome::Pending {
+            state: Binary::from(b"checkpoint".as_slice()),
+            wait: Wait::Operation {
+                resolver: "service".into(),
+                deadline: 10,
+                max_result_bytes: case.max_result_bytes,
+            },
+        };
+        rt.run_block(&mut store, 2, &mut host).unwrap();
+        let before: Vec<_> = store
+            .range(None, None, cosmwasm_std::Order::Ascending)
+            .collect();
+        let delivered = rt.deliver(
+            &mut store,
+            3,
+            &contract,
+            id,
+            1,
+            "service",
+            case.resolution.clone(),
+            false,
+        );
+        assert_eq!(delivered.is_ok(), case.accepted, "{}", case.name);
+        if case.accepted {
+            assert_eq!(
+                rt.task(&store, &contract, id, 3).unwrap().inbox,
+                Some(case.resolution.clone()),
+                "{}",
+                case.name
+            );
+            host.outcome = PollOutcome::Complete {
+                output: Binary::default(),
+            };
+            assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 1);
+            let request: PollRequest =
+                cosmwasm_std::from_json(store.get(b"user/request").unwrap()).unwrap();
+            assert_eq!(
+                request.step,
+                PollStep::Resume {
+                    state: Binary::from(b"checkpoint".as_slice()),
+                    resolution: case.resolution,
+                },
+                "{}",
+                case.name
+            );
+        } else {
+            let after: Vec<_> = store
+                .range(None, None, cosmwasm_std::Order::Ascending)
+                .collect();
+            assert_eq!(after, before, "{}", case.name);
+            assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 0);
+        }
+    }
+}
