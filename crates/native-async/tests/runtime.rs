@@ -1479,7 +1479,7 @@ fn last_active_task_removes_owner_count_and_pruning_keeps_ids() {
             &mut host,
         )
         .unwrap();
-        if owner == &a && id == a1 {
+        if owner == a && id == a1 {
             assert_eq!(
                 cosmwasm_std::from_json::<u64>(s.get(&count(&a)).unwrap()).unwrap(),
                 1
