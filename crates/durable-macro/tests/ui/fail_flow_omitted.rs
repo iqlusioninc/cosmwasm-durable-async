@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 mod support;
 use support::NumberWait;
 use durable_macro::durable_workflow;

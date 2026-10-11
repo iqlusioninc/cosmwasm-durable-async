@@ -1,19 +1,5 @@
 error: control-flow edge requires this outer local; include it in every checkpoint on this path
- --> tests/ui/fail_flow_edge.rs:6:32
+ --> tests/ui/fail_flow_edge.rs:7:32
   |
-6 | async fn bad(ctx: WorkflowCtx, limit: u32) -> Result<u32, WaitError> {
+7 | async fn bad(ctx: WorkflowCtx, limit: u32) -> Result<u32, WaitError> {
   |                                ^^^^^
-
-warning: unused import: `support::NumberWait`
- --> tests/ui/fail_flow_edge.rs:2:5
-  |
-2 | use support::NumberWait;
-  |     ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused imports: `WaitError` and `WorkflowCtx`
- --> tests/ui/fail_flow_edge.rs:4:23
-  |
-4 | use durable_runtime::{WorkflowCtx, WaitError};
-  |                       ^^^^^^^^^^^  ^^^^^^^^^

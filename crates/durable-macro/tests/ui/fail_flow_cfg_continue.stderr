@@ -1,0 +1,5 @@
+error: conditional compilation on workflow arguments or statements is not supported; conditionally compile the whole workflow
+ --> tests/ui/fail_flow_cfg_continue.rs:7:9
+  |
+7 |         #[cfg(any())]
+  |         ^^^^^^^^^^^^^

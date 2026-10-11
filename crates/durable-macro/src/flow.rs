@@ -339,6 +339,7 @@ impl Builder<'_> {
                         return self.sequence(after, rest, scope, next, loop_targets);
                     }
                     Expr::Break(e) => {
+                        parse::reject_conditional_attributes(&e.attrs)?;
                         if !rest.is_empty() {
                             return Err(syn::Error::new_spanned(&rest[0], "statements after unconditional break are not supported in durable control flow"));
                         }
@@ -351,6 +352,7 @@ impl Builder<'_> {
                         return self.jump(current, target, &scope);
                     }
                     Expr::Continue(e) => {
+                        parse::reject_conditional_attributes(&e.attrs)?;
                         if !rest.is_empty() {
                             return Err(syn::Error::new_spanned(&rest[0], "statements after unconditional continue are not supported in durable control flow"));
                         }
@@ -432,33 +434,86 @@ impl Graph {
             let operation = &wait.operation;
             quote!(#variant(#state_type,<#operation as ::durable_runtime::Operation>::Request))
         });
-        let arms = self.nodes.iter().enumerate().map(|(i,node)| {
-            let variant = node_ident(i); let bindings=node.bindings.iter().map(|b| {let name=&b.ident; let mutable=b.mutable.then(||quote!(mut)); quote!(#mutable #name)});
-            let statements=&node.statements;
+        let arms = self.nodes.iter().enumerate().map(|(i, node)| {
+            let variant = node_ident(i);
+            let bindings = node.bindings.iter().map(|binding| {
+                let name = &binding.ident;
+                let mutable = binding.mutable.then(|| quote!(mut));
+                quote!(#mutable #name)
+            });
+            let statements = &node.statements;
             let end = match &node.end {
                 End::Pending => unreachable!(),
-                End::Jump(target) => { let edge=self.edge(*target); quote!(#cursor = #edge;) },
-                End::Branch(condition,yes,no) => {let yes=self.edge(*yes); let no=self.edge(*no); quote!(#cursor = if #condition {#yes} else {#no};)},
-                End::Wait(index) => {let wait=&waits[*index]; let operation=&wait.operation; let expr=&wait.request; let variant=&variants[*index]; let names=wait.checkpoint.iter().map(|b|&b.ident); quote!(let #request: <#operation as ::durable_runtime::Operation>::Request = #expr; return ::core::result::Result::Ok(#action::#variant(#state_type::#variant {#(#names),*},#request));)},
+                End::Jump(target) => {
+                    let edge = self.edge(*target);
+                    quote!(#cursor = #edge;)
+                }
+                End::Branch(condition, yes, no) => {
+                    let yes = self.edge(*yes);
+                    let no = self.edge(*no);
+                    quote!(#cursor = if #condition { #yes } else { #no };)
+                }
+                End::Wait(index) => {
+                    let wait = &waits[*index];
+                    let operation = &wait.operation;
+                    let expr = &wait.request;
+                    let variant = &variants[*index];
+                    let names = wait.checkpoint.iter().map(|binding| &binding.ident);
+                    quote! {
+                        let #request: <#operation as ::durable_runtime::Operation>::Request = #expr;
+                        return ::core::result::Result::Ok(#action::#variant(
+                            #state_type::#variant { #(#names),* },
+                            #request,
+                        ));
+                    }
+                }
                 End::Complete => quote!(),
             };
-            let body = if matches!(node.end,End::Complete) { quote!(let #value: ::core::result::Result<#output,#error> = {#(#statements)*}; return ::core::result::Result::Ok(#action::Completed(#value?));) } else {quote!(#(#statements)* #end)};
-            quote!(#flow::#variant {#(#bindings),*} => {#body})
+            let body = if matches!(node.end, End::Complete) {
+                quote! {
+                    let #value: ::core::result::Result<#output, #error> = { #(#statements)* };
+                    return ::core::result::Result::Ok(#action::Completed(#value?));
+                }
+            } else {
+                quote!(#(#statements)* #end)
+            };
+            quote!(#flow::#variant { #(#bindings),* } => { #body })
         });
-        let waiting = waits.iter().zip(variants).map(|(wait,variant)| { let operation=&wait.operation; quote!(::core::result::Result::Ok(#action::#variant(#state,#request)) => {let #prepared=#context.prepare::<#operation>(#request)?; ::core::result::Result::Ok(::durable_runtime::Transition::Wait {state: ::durable_runtime::cosmwasm_std::to_json_binary(&#state)?,wait:#prepared})}) });
+        let waiting = waits.iter().zip(variants).map(|(wait, variant)| {
+            let operation = &wait.operation;
+            quote! {
+                ::core::result::Result::Ok(#action::#variant(#state, #request)) => {
+                    let #prepared = #context.prepare::<#operation>(#request)?;
+                    ::core::result::Result::Ok(::durable_runtime::Transition::Wait {
+                        state: ::durable_runtime::cosmwasm_std::to_json_binary(&#state)?,
+                        wait: #prepared,
+                    })
+                }
+            }
+        });
         let initial = self.edge(entry);
         quote! {
-            #[allow(non_camel_case_types)] enum #flow {#(#flow_variants),*}
-            #[allow(non_camel_case_types)] enum #action {Completed(#output),#(#action_variants),*}
-            #[allow(unused_mut,unused_variables)]
-            let #result: ::core::result::Result<#action,#error> = (|| {
+            #[allow(non_camel_case_types)]
+            enum #flow { #(#flow_variants),* }
+            #[allow(non_camel_case_types)]
+            enum #action { Completed(#output), #(#action_variants),* }
+            #[allow(unused_mut, unused_variables)]
+            let #result: ::core::result::Result<#action, #error> = (|| {
                 #prelude
                 let mut #cursor = #initial;
-                loop {match #cursor {#(#arms),*}}
+                loop { match #cursor { #(#arms),* } }
             })();
             match #result {
-                ::core::result::Result::Ok(#action::Completed(#value)) => ::core::result::Result::Ok(::durable_runtime::Transition::Completed(::durable_runtime::cosmwasm_std::to_json_binary(&#value)?)),
-                ::core::result::Result::Err(#value) => ::core::result::Result::Ok(::durable_runtime::Transition::Failed(::durable_runtime::cosmwasm_std::to_json_binary(&#value)?)),
+                ::core::result::Result::Ok(#action::Completed(#value)) => {
+                    ::core::result::Result::Ok(::durable_runtime::Transition::Completed(
+                        ::durable_runtime::cosmwasm_std::to_json_binary(&#value)?,
+                    ))
+                }
+                ::core::result::Result::Err(#value) => {
+                    ::core::result::Result::Ok(::durable_runtime::Transition::Failed(
+                        ::durable_runtime::cosmwasm_std::to_json_binary(&#value)?,
+                    ))
+                }
                 #(#waiting),*
             }
         }

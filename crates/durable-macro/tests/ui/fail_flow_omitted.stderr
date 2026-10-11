@@ -1,19 +1,5 @@
 error: local was omitted from the checkpoint; checkpoint it or declare it again before use
-  --> tests/ui/fail_flow_omitted.rs:11:9
+  --> tests/ui/fail_flow_omitted.rs:12:9
    |
-11 |         total += value;
+12 |         total += value;
    |         ^^^^^
-
-warning: unused import: `support::NumberWait`
- --> tests/ui/fail_flow_omitted.rs:2:5
-  |
-2 | use support::NumberWait;
-  |     ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused imports: `WaitError` and `WorkflowCtx`
- --> tests/ui/fail_flow_omitted.rs:4:23
-  |
-4 | use durable_runtime::{WorkflowCtx, WaitError};
-  |                       ^^^^^^^^^^^  ^^^^^^^^^
