@@ -10,6 +10,12 @@ fn roundtrip<T: DeserializeOwned + Serialize>(bytes: &[u8]) {
 #[test]
 fn shared_go_rust_wire_fixtures() {
     roundtrip::<RuntimeMsg>(include_bytes!(
+        "../../../fixtures/native-async/v1/extend-lease.json"
+    ));
+    roundtrip::<RuntimeMsg>(include_bytes!(
+        "../../../fixtures/native-async/v1/update-budget.json"
+    ));
+    roundtrip::<RuntimeMsg>(include_bytes!(
         "../../../fixtures/native-async/v1/register.json"
     ));
     roundtrip::<RuntimeMsg>(include_bytes!(

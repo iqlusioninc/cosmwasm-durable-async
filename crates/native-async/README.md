@@ -28,11 +28,11 @@ With `host` enabled, `runtime::Runtime` provides:
 - Full attempt escrow reservation before guest dispatch, actual trusted host-meter settlement, unused reservation release, and fees that survive guest rollback. `PollHost` returns metered task failures separately from node errors; node errors abort the whole block cache.
 - Child storage caches for guest writes, scheduler state, bank effects, and outbound calls. Trap, out-of-gas, invalid outcome, and failed messages restore the prior continuation/inbox. Application Fail commits prior writes and becomes terminal.
 - Staged waits for immediate service callbacks. In-flight cancellation/resumption is rejected; atomic third-party deposits survive settlement without granting retry authority.
-- Prepaid fixed byte/height leases, admission limits, completion/failure/cancel/expiry refunds, bounded retained-record pruning, and active-task migration gating. IDs are monotonic per owning contract and never reused after pruning.
+- Prepaid byte/height leases with controlled monotonic growth, admission limits, completion/failure/cancel/expiry refunds, bounded retained-record pruning, and active-task migration gating. IDs are monotonic per owning contract and never reused after pruning.
 
 `PollHost` is an explicit trusted adapter contract: all user/bank effects must use the supplied transactional storage; gas must come from the host meter; checksum must come from the actual contract; callbacks must pass the actual scheduler phase. A no-op transfer or process-local user side effect is not a valid adapter. Route **all** management of executable records through `Runtime`, rather than bypassing it with the legacy funding-only `Keeper`.
 
-Byte allocation reserves maximum-width mutable accounting/counters, the largest lifecycle/pause and queue-key encodings, a bounded 1024-byte index allowance, and worst-case escaped JSON inbox capacity. Top-ups and resume recheck voluntary changes inside their transaction cache; mandatory fee settlement and pause recording use prepaid metadata headroom and cannot fail a quota check. Empty contract ring/membership records are removed during terminal cleanup before storage allocation can be released. The configured host/maintenance gas costs and allocation allowance are reference policy parameters, not production calibration. Lease duration and allocation are fixed at registration in this version; resizing and extensions are not supported. Migration remains conservatively blocked until expired records have completed their bounded terminal transition.
+Byte allocation reserves maximum-width mutable accounting/counters, the largest lifecycle/pause and queue-key encodings, a bounded 1024-byte index allowance, and worst-case escaped JSON inbox capacity. Top-ups, resume, and policy updates recheck voluntary changes inside their transaction cache; mandatory fee settlement and pause recording use prepaid metadata headroom and cannot fail a quota check. Empty contract ring/membership records are removed during terminal cleanup before storage allocation can be released. The configured host/maintenance gas costs and allocation allowance are reference policy parameters, not production calibration. Migration remains conservatively blocked until expired records have completed their bounded terminal transition.
 
 ## Contract wiring
 
@@ -83,4 +83,23 @@ cargo build -p native-async --target wasm32-unknown-unknown --locked
 
 The default feature set contains only wire types and contract helpers. Enable `host` to run the funding integration tests. cw-multi-test verifies transactional behavior in simulation; it does not establish real VM gas use, block latency, or chain deployment compatibility.
 
-Reference tests exercise the storage-backed scheduler, bank adapter, immediate callbacks, rollback, exact boundaries, fairness, and lifecycle accounting. They do not establish real Wasm VM gas conversion, cold/warm validator equivalence, state sync, sustained overload progress, or production storage/gas calibration. Those require pinned chain integration and application-level evidence. Lease extension, allocation growth, budget/refund-policy editing, multiple simultaneous subscriptions, and reserved per-block service remain outside this version.
+Reference tests exercise the storage-backed scheduler, bank adapter, immediate callbacks, rollback, exact boundaries, fairness, and lifecycle accounting. They do not establish real Wasm VM gas conversion, cold/warm validator equivalence, state sync, sustained overload progress, or production storage/gas calibration. Those require pinned chain integration and application-level evidence. Multiple simultaneous subscriptions and reserved per-block service remain outside this version.
+
+## Controlled lease and budget management
+
+`RuntimeMsg::ExtendLease` permits the controller to increase allocated bytes,
+expiry, or both while the task is live, unexpired, and outside a poll. Both values
+are monotonic; an identical lease is rejected. Growth prepays incremental rent
+from available execution escrow at the current byte-block price, without another
+cleanup fee. Insufficient escrow or capacity rejects the entire change. Top up
+explicitly before extending if necessary. Operation deadlines and readiness are
+unchanged, and the new expiry governs retention and pruning.
+
+`RuntimeMsg::UpdateBudget` permits the controller to change the poll cap, maximum
+gas price, and validated refund recipient under the same lifecycle restrictions.
+Identical budget updates are accepted. This preserves prepaid lease and accumulated
+fees and never resumes a paused task or bypasses a wait. Available escrow may be
+below the new cap; explicit resume checks price and affordability. Sponsor deposits
+confer no management authority. SDK `extend_lease` and `update_budget` forward
+`MessageInfo.sender` and reject all attached funds; executable management always
+goes through `Runtime`, never the funding-only keeper.

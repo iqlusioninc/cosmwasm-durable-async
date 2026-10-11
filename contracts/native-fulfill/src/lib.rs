@@ -39,6 +39,17 @@ pub enum ExecuteMsg {
         outcome: durable_runtime::Outcome,
     },
     Async(native_async::AsyncExecuteMsg),
+    ExtendLease {
+        task_id: u64,
+        allocated_bytes: u64,
+        expires_at: u64,
+    },
+    UpdateBudget {
+        task_id: u64,
+        gas_per_poll: u64,
+        max_gas_price: cosmwasm_std::Decimal,
+        refund: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +297,28 @@ pub fn execute(
 ) -> Result<Response<RuntimeMsg>, ContractError> {
     let cfg = config(deps.storage)?;
     match msg {
+        ExecuteMsg::ExtendLease {
+            task_id,
+            allocated_bytes,
+            expires_at,
+        } => Ok(native_async::extend_lease(
+            &info,
+            task_id,
+            allocated_bytes,
+            expires_at,
+        )?),
+        ExecuteMsg::UpdateBudget {
+            task_id,
+            gas_per_poll,
+            max_gas_price,
+            refund,
+        } => Ok(native_async::update_budget(
+            &info,
+            task_id,
+            gas_per_poll,
+            max_gas_price,
+            refund,
+        )?),
         ExecuteMsg::Start {
             order,
             business,

@@ -5,6 +5,404 @@ use cosmwasm_std::{
 };
 use native_async::{host::Keeper, runtime::*, *};
 
+fn management(value: serde_json::Value) -> RuntimeMsg {
+    serde_json::from_value(value).expect("management ABI")
+}
+fn funding(rt: &Runtime, api: &MockApi, s: &dyn Storage, c: &Addr, id: u64) -> TaskFunding {
+    cosmwasm_std::from_json(
+        rt.keeper
+            .query(
+                api,
+                s,
+                3,
+                SchedulerQuery::TaskFunding {
+                    contract: c.to_string(),
+                    task_id: id,
+                },
+            )
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn extend_lease_charges_exact_incremental_rent_and_preserves_wait() {
+    for (bytes, expiry, rent) in [(4196, 20, 1900), (4096, 21, 4096), (4196, 21, 6096)] {
+        let (mut rt, api, mut s, c, mut host) = setup();
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        host.outcome = PollOutcome::Pending {
+            state: Binary::default(),
+            wait: Wait::Operation {
+                resolver: "service".into(),
+                deadline: 5,
+                max_result_bytes: 10,
+            },
+        };
+        rt.run_block(&mut s, 2, &mut host).unwrap();
+        rt.manage(
+            &api,
+            &mut s,
+            3,
+            &c,
+            SchedulerMsg::FundTask {
+                task_id: id,
+                contributor: c.to_string(),
+                funds: Coin::new(8000u128, "ugas"),
+            },
+            &mut host,
+        )
+        .unwrap();
+        rt.config.lease_price_per_byte_block = Uint128::one();
+        let before = funding(&rt, &api, &s, &c, id);
+        let old = rt.task(&s, &c, id, 3).unwrap();
+        rt.execute(
+            &api,
+            &mut s,
+            3,
+            &c,
+            management(serde_json::json!({"extend_lease": {
+                "task_id": id, "actor": c, "allocated_bytes": bytes, "expires_at": expiry,
+            }})),
+            false,
+            &mut host,
+        )
+        .unwrap();
+        let after = funding(&rt, &api, &s, &c, id);
+        assert_eq!(before.available - after.available, Uint128::new(rent));
+        assert_eq!(after.storage_lease_paid, Uint128::new(rent + 1));
+        let updated = rt.task(&s, &c, id, 3).unwrap();
+        assert_eq!(updated.wait, old.wait);
+        assert_eq!(updated.wait_sequence, old.wait_sequence);
+        assert_eq!(updated.inbox, old.inbox);
+        assert_eq!(updated.status, old.status);
+        assert_eq!(updated.expires_at, expiry);
+        assert_eq!(updated.retain_until, expiry + 2);
+        assert_eq!(updated.allocated_bytes, bytes);
+    }
+}
+
+#[test]
+fn budget_update_keeps_pause_until_explicit_retry_and_changes_refund() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.gas = 45;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let refund = api.addr_make("new-refund");
+    rt.execute(
+        &api,
+        &mut s,
+        3,
+        &c,
+        management(serde_json::json!({"update_budget": {
+            "task_id": id, "actor": c, "gas_per_poll": 60, "max_gas_price": "1.5", "refund": refund,
+        }})),
+        false,
+        &mut host,
+    )
+    .unwrap();
+    let f = funding(&rt, &api, &s, &c, id);
+    assert_eq!(f.max_attempt_charge, Uint128::new(60));
+    assert_eq!(f.refund, refund.as_str());
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    rt.manage(
+        &api,
+        &mut s,
+        3,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(rt.run_block(&mut s, 4, &mut host).unwrap().polls, 1);
+    assert_eq!(
+        rt.task(&s, &c, id, 4).unwrap().status,
+        ExecutionStatus::Completed
+    );
+    let balance: Uint128 =
+        cosmwasm_std::from_json(s.get(format!("bank/{refund}").as_bytes()).unwrap()).unwrap();
+    assert_eq!(balance, Uint128::new(912));
+}
+
+fn snapshot(s: &dyn Storage) -> Vec<(Vec<u8>, Vec<u8>)> {
+    s.range(None, None, cosmwasm_std::Order::Ascending)
+        .collect()
+}
+
+#[test]
+fn policy_validation_and_insufficient_rent_are_fully_atomic() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    let sponsor = api.addr_make("sponsor");
+    rt.manage(
+        &api,
+        &mut s,
+        2,
+        &c,
+        SchedulerMsg::FundTask {
+            task_id: id,
+            contributor: sponsor.to_string(),
+            funds: Coin::new(1u128, "ugas"),
+        },
+        &mut host,
+    )
+    .unwrap();
+    let extend = |actor: &Addr, bytes, expiry| {
+        management(serde_json::json!({"extend_lease":{
+            "task_id":id,"actor":actor,"allocated_bytes":bytes,"expires_at":expiry,
+        }}))
+    };
+    let budget = |actor: &Addr, gas, refund: &str| {
+        management(serde_json::json!({"update_budget":{
+            "task_id":id,"actor":actor,"gas_per_poll":gas,"max_gas_price":"1","refund":refund,
+        }}))
+    };
+    for (h, msg) in [
+        (3, extend(&sponsor, 5000, 25)),
+        (3, budget(&sponsor, 60, c.as_str())),
+        (20, extend(&c, 5000, 25)),
+        (20, budget(&c, 60, c.as_str())),
+        (3, extend(&c, 4096, 20)),
+        (3, extend(&c, 4000, 21)),
+        (3, extend(&c, 5000, 19)),
+        (3, extend(&c, 10001, 21)),
+        (3, extend(&c, 5000, 104)),
+        (3, extend(&c, 5000, u64::MAX)),
+        (3, budget(&c, 0, c.as_str())),
+        (3, budget(&c, 2, c.as_str())),
+        (3, budget(&c, 101, c.as_str())),
+        (3, budget(&c, 60, "invalid")),
+        (3, budget(&c, 60, rt.keeper.escrow.as_str())),
+    ] {
+        let before = snapshot(&s);
+        assert!(rt
+            .execute(&api, &mut s, h, &c, msg, false, &mut host)
+            .is_err());
+        assert_eq!(snapshot(&s), before);
+    }
+    rt.config.max_allocated_bytes = 4096;
+    let before = snapshot(&s);
+    assert!(rt
+        .execute(&api, &mut s, 3, &c, extend(&c, 4097, 20), false, &mut host)
+        .is_err());
+    assert_eq!(snapshot(&s), before);
+    rt.config.max_allocated_bytes = 100_000;
+    rt.config.lease_price_per_byte_block = Uint128::one();
+    assert!(rt
+        .execute(&api, &mut s, 3, &c, extend(&c, 5000, 25), false, &mut host)
+        .is_err());
+    assert_eq!(snapshot(&s), before);
+    rt.config.lease_price_per_byte_block = Uint128::MAX;
+    assert!(rt
+        .execute(&api, &mut s, 3, &c, extend(&c, 5000, 25), false, &mut host)
+        .is_err());
+    assert_eq!(snapshot(&s), before);
+    rt.config.retention_blocks = u64::MAX;
+    assert!(rt
+        .execute(&api, &mut s, 3, &c, extend(&c, 5000, 25), false, &mut host)
+        .is_err());
+    assert_eq!(snapshot(&s), before);
+}
+
+#[test]
+fn extended_expiry_index_and_retention_survive_restart() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.outcome = PollOutcome::Pending {
+        state: Binary::default(),
+        wait: Wait::Height { height: 19 },
+    };
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.execute(
+        &api,
+        &mut s,
+        3,
+        &c,
+        management(serde_json::json!({"extend_lease":{
+            "task_id":id,"actor":c,"allocated_bytes":5000,"expires_at":25,
+        }})),
+        false,
+        &mut host,
+    )
+    .unwrap();
+    let expiry_records: Vec<_> = snapshot(&s)
+        .into_iter()
+        .filter(|(k, _)| k.starts_with(b"na2/expiry/"))
+        .collect();
+    assert_eq!(expiry_records.len(), 1);
+    assert_eq!(
+        &expiry_records[0].0[b"na2/expiry/".len()..b"na2/expiry/".len() + 8],
+        &25u64.to_be_bytes()
+    );
+    let mut restored = Runtime {
+        keeper: rt.keeper,
+        config: rt.config,
+    };
+    restored.config.block_gas = 1; // Exercise maintenance without invoking guest.
+    assert_eq!(
+        restored
+            .run_block(&mut s, 20, &mut host)
+            .unwrap()
+            .expirations,
+        0
+    );
+    assert_eq!(
+        restored
+            .run_block(&mut s, 25, &mut host)
+            .unwrap()
+            .expirations,
+        1
+    );
+    assert_eq!(restored.run_block(&mut s, 26, &mut host).unwrap().prunes, 0);
+    assert_eq!(restored.run_block(&mut s, 27, &mut host).unwrap().prunes, 1);
+    assert!(restored.task(&s, &c, id, 27).is_err());
+}
+
+#[test]
+fn budget_noop_is_accepted_price_limit_blocks_resume_and_cancel_uses_new_refund() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.fail = true;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let refund = api.addr_make("new-refund");
+    let msg = management(serde_json::json!({"update_budget":{
+        "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"0.5","refund":refund,
+    }}));
+    rt.execute(&api, &mut s, 3, &c, msg.clone(), false, &mut host)
+        .unwrap();
+    let before = snapshot(&s);
+    rt.execute(&api, &mut s, 3, &c, msg, false, &mut host)
+        .unwrap();
+    assert_eq!(snapshot(&s), before);
+    assert!(rt
+        .manage(
+            &api,
+            &mut s,
+            3,
+            &c,
+            SchedulerMsg::ResumeTask {
+                task_id: id,
+                actor: c.to_string()
+            },
+            &mut host
+        )
+        .is_err());
+    rt.manage(
+        &api,
+        &mut s,
+        3,
+        &c,
+        SchedulerMsg::CancelTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    let balance: Uint128 =
+        cosmwasm_std::from_json(s.get(format!("bank/{refund}").as_bytes()).unwrap()).unwrap();
+    assert_eq!(balance, Uint128::new(990));
+}
+
+#[test]
+fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.cleanup_fee = Uint128::new(970);
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    let msg = management(serde_json::json!({"update_budget":{
+        "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"1","refund":c,
+    }}));
+    rt.execute(&api, &mut s, 3, &c, msg, false, &mut host)
+        .unwrap();
+    let before = funding(&rt, &api, &s, &c, id);
+    assert_eq!(before.available, Uint128::new(30));
+    assert_eq!(before.storage_lease_paid, Uint128::new(970));
+    assert_eq!(before.cumulative_execution_fees, Uint128::zero());
+    assert!(rt
+        .manage(
+            &api,
+            &mut s,
+            3,
+            &c,
+            SchedulerMsg::ResumeTask {
+                task_id: id,
+                actor: c.to_string()
+            },
+            &mut host
+        )
+        .is_err());
+    rt.manage(
+        &api,
+        &mut s,
+        3,
+        &c,
+        SchedulerMsg::FundTask {
+            task_id: id,
+            contributor: api.addr_make("sponsor").to_string(),
+            funds: Coin::new(30u128, "ugas"),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    rt.manage(
+        &api,
+        &mut s,
+        3,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(rt.run_block(&mut s, 4, &mut host).unwrap().polls, 1);
+}
+
+#[test]
+fn budget_update_does_not_bypass_an_operation_wait_or_discard_accepted_inbox() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.outcome = PollOutcome::Pending {
+        state: Binary::default(),
+        wait: Wait::Operation {
+            resolver: "service".into(),
+            deadline: 10,
+            max_result_bytes: 20,
+        },
+    };
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let budget = management(serde_json::json!({"update_budget":{
+        "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"1","refund":c,
+    }}));
+    rt.execute(&api, &mut s, 3, &c, budget.clone(), false, &mut host)
+        .unwrap();
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    rt.deliver(
+        &mut s,
+        4,
+        &c,
+        id,
+        1,
+        "service",
+        Resolution::Success {
+            data: Binary::from(b"yes".as_slice()),
+        },
+        false,
+    )
+    .unwrap();
+    let before = cosmwasm_std::to_json_binary(&rt.task(&s, &c, id, 4).unwrap()).unwrap();
+    rt.execute(&api, &mut s, 4, &c, budget, false, &mut host)
+        .unwrap();
+    assert_eq!(
+        cosmwasm_std::to_json_binary(&rt.task(&s, &c, id, 4).unwrap()).unwrap(),
+        before
+    );
+}
+
 struct TestHost {
     outcome: PollOutcome,
     fail: bool,
@@ -724,6 +1122,26 @@ impl PollHost for ReentrantHost<'_> {
             assert!(self
                 .runtime
                 .manage(self.api, s, 2, &self.contract, msg, &mut self.inner)
+                .is_err());
+        }
+        for msg in [
+            RuntimeMsg::ExtendLease {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+                allocated_bytes: 5000,
+                expires_at: 25,
+            },
+            RuntimeMsg::UpdateBudget {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+                gas_per_poll: 60,
+                max_gas_price: Decimal::one(),
+                refund: self.contract.to_string(),
+            },
+        ] {
+            assert!(self
+                .runtime
+                .execute(self.api, s, 2, &self.contract, msg, true, &mut self.inner)
                 .is_err());
         }
         let funds: TaskFunding = cosmwasm_std::from_json(self.runtime.keeper.query(

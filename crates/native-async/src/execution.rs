@@ -100,6 +100,21 @@ pub enum RuntimeMsg {
         resolution: Resolution,
     },
     Funding(crate::SchedulerMsg),
+    /// Controller-authenticated monotonic prepaid lease growth.
+    ExtendLease {
+        task_id: u64,
+        actor: String,
+        allocated_bytes: u64,
+        expires_at: u64,
+    },
+    /// Updates policy only; a paused task still requires explicit ResumeTask.
+    UpdateBudget {
+        task_id: u64,
+        actor: String,
+        gas_per_poll: u64,
+        max_gas_price: Decimal,
+        refund: String,
+    },
 }
 impl CustomMsg for RuntimeMsg {}
 

@@ -1,6 +1,56 @@
 use crate::{SchedulerMsg, TaskId};
 use cosmwasm_std::{Coin, CosmosMsg, MessageInfo, Response, StdError, StdResult};
 
+/// Forward the actual caller; the owning contract must never accept a supplied actor.
+pub fn extend_lease(
+    info: &MessageInfo,
+    task_id: TaskId,
+    allocated_bytes: u64,
+    expires_at: u64,
+) -> StdResult<Response<crate::RuntimeMsg>> {
+    policy_message(
+        info,
+        crate::RuntimeMsg::ExtendLease {
+            task_id,
+            actor: info.sender.to_string(),
+            allocated_bytes,
+            expires_at,
+        },
+    )
+}
+
+/// Policy changes do not resume a paused task. Identical updates are accepted.
+pub fn update_budget(
+    info: &MessageInfo,
+    task_id: TaskId,
+    gas_per_poll: u64,
+    max_gas_price: cosmwasm_std::Decimal,
+    refund: String,
+) -> StdResult<Response<crate::RuntimeMsg>> {
+    policy_message(
+        info,
+        crate::RuntimeMsg::UpdateBudget {
+            task_id,
+            actor: info.sender.to_string(),
+            gas_per_poll,
+            max_gas_price,
+            refund,
+        },
+    )
+}
+
+fn policy_message(
+    info: &MessageInfo,
+    msg: crate::RuntimeMsg,
+) -> StdResult<Response<crate::RuntimeMsg>> {
+    if !info.funds.is_empty() {
+        return Err(StdError::generic_err(
+            "management calls do not accept funds",
+        ));
+    }
+    Ok(Response::new().add_message(CosmosMsg::Custom(msg)))
+}
+
 /// Accept only a dedicated gas deposit. Business funds must be split by the
 /// application's start handler, not passed to this helper.
 pub fn attached_gas(info: &MessageInfo, denom: &str) -> StdResult<Coin> {

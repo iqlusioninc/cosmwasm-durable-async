@@ -337,6 +337,10 @@ impl Runtime {
             RuntimeMsg::Funding(msg) => {
                 return self.manage(api, s, h, c, msg, host);
             }
+            msg @ (RuntimeMsg::ExtendLease { .. } | RuntimeMsg::UpdateBudget { .. }) => {
+                self.update_policy(api, s, h, c, msg, host)?;
+                None
+            }
         };
         Ok(host::HostResponse {
             events: vec![],
@@ -359,6 +363,118 @@ impl Runtime {
                 h,
             )?),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_policy(
+        &self,
+        api: &dyn Api,
+        s: &mut dyn Storage,
+        h: u64,
+        c: &Addr,
+        msg: RuntimeMsg,
+        host: &mut impl PollHost,
+    ) -> StdResult<()> {
+        let (id, actor) = match &msg {
+            RuntimeMsg::ExtendLease { task_id, actor, .. }
+            | RuntimeMsg::UpdateBudget { task_id, actor, .. } => (*task_id, actor),
+            _ => return Err(err("unsupported policy update")),
+        };
+        let mut cache = Cache::new(s);
+        let mut t = load(&cache, c.as_str(), id)?;
+        let mut f = host::load(&cache, c, id)?;
+        if api.addr_validate(actor)?.as_str() != f.control {
+            return Err(err("unauthorized task controller"));
+        }
+        if terminal(&t) || h >= t.expires_at {
+            return Err(err("task is terminal or expired"));
+        }
+        if !t.reserved.is_zero() || !f.reserved.is_zero() {
+            return Err(err("cannot manage an in-flight poll"));
+        }
+        match msg {
+            RuntimeMsg::ExtendLease {
+                allocated_bytes,
+                expires_at,
+                ..
+            } => {
+                if allocated_bytes < t.allocated_bytes
+                    || expires_at < t.expires_at
+                    || (allocated_bytes == t.allocated_bytes && expires_at == t.expires_at)
+                    || allocated_bytes > self.config.max_task_bytes
+                    || expires_at - h > self.keeper.config.max_lifetime_blocks
+                {
+                    return Err(err("invalid lease extension"));
+                }
+                let retain_until = expires_at
+                    .checked_add(self.config.retention_blocks)
+                    .ok_or_else(|| err("retention overflow"))?;
+                let added_bytes = allocated_bytes - t.allocated_bytes;
+                let used = number(&cache, b"na2/bytes")?
+                    .checked_add(added_bytes)
+                    .ok_or_else(|| err("storage overflow"))?;
+                if used > self.config.max_allocated_bytes {
+                    return Err(err("runtime capacity exhausted"));
+                }
+                let old_retention = t
+                    .expires_at
+                    .checked_add(self.config.retention_blocks)
+                    .ok_or_else(|| err("retention overflow"))?;
+                let byte_blocks = Uint128::from(added_bytes)
+                    .checked_mul(Uint128::from(old_retention - h))?
+                    .checked_add(
+                        Uint128::from(allocated_bytes)
+                            .checked_mul(Uint128::from(expires_at - t.expires_at))?,
+                    )?;
+                let rent = byte_blocks.checked_mul(self.config.lease_price_per_byte_block)?;
+                f.available = f.available.checked_sub(rent)?;
+                f.storage_lease_paid = f.storage_lease_paid.checked_add(rent)?;
+                f.allocated_bytes = allocated_bytes;
+                f.expires_at = expires_at;
+                t.storage_fee = t.storage_fee.checked_add(rent)?;
+                t.allocated_bytes = allocated_bytes;
+                t.expires_at = expires_at;
+                t.retain_until = retain_until;
+                cache.remove(t.expiry_key.as_slice());
+                t.expiry_key = timed(&mut cache, b"na2/expiry/", expires_at, &t)?.into();
+                put(&mut cache, b"na2/bytes", &used)?;
+                if !rent.is_zero() {
+                    host.transfer(
+                        &mut cache,
+                        &self.keeper.escrow,
+                        &self.config.fee_collector,
+                        &Coin::new(rent.u128(), &self.keeper.config.denom),
+                    )?;
+                }
+            }
+            RuntimeMsg::UpdateBudget {
+                gas_per_poll,
+                max_gas_price,
+                refund,
+                ..
+            } => {
+                let refund = api.addr_validate(&refund)?;
+                if refund == self.keeper.escrow {
+                    return Err(err("escrow cannot receive refunds"));
+                }
+                if gas_per_poll <= self.config.host_gas
+                    || gas_per_poll > self.config.block_gas
+                    || gas_per_poll > self.keeper.config.max_gas_per_poll
+                {
+                    return Err(err("invalid poll gas cap"));
+                }
+                f.gas_per_poll = gas_per_poll;
+                f.max_gas_price = max_gas_price;
+                f.max_attempt_charge = self.keeper.attempt_charge(gas_per_poll)?;
+                f.refund = refund.to_string();
+            }
+            _ => unreachable!(),
+        }
+        host::save(&mut cache, c, &f)?;
+        self.check_quota(&cache, &t)?;
+        save(&mut cache, &t)?;
+        cache.commit();
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     pub fn register(

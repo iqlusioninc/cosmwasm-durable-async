@@ -7,6 +7,66 @@ use cosmwasm_std::{
 };
 use native_async::{PollOutcome, PollRequest, PollResponse, PollStep, Resolution, TaskSudoMsg};
 
+#[test]
+fn management_routes_forward_actual_sender_without_accepting_coins() {
+    let mut deps = mock_dependencies();
+    let sender = deps.api.addr_make("controller");
+    let service = deps.api.addr_make("service").to_string();
+    instantiate(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&sender, &[]),
+        InstantiateMsg {
+            payment_service: service.clone(),
+            shipment_service: service,
+            deadline_blocks: 10,
+            fee_denom: "ugas".into(),
+        },
+    )
+    .unwrap();
+    for (json, expected) in [
+        (
+            r#"{"ExtendLease":{"task_id":7,"allocated_bytes":8192,"expires_at":1000}}"#,
+            RuntimeMsg::ExtendLease {
+                task_id: 7,
+                actor: sender.to_string(),
+                allocated_bytes: 8192,
+                expires_at: 1000,
+            },
+        ),
+        (
+            r#"{"UpdateBudget":{"task_id":7,"gas_per_poll":100,"max_gas_price":"1","refund":"refund"}}"#,
+            RuntimeMsg::UpdateBudget {
+                task_id: 7,
+                actor: sender.to_string(),
+                gas_per_poll: 100,
+                max_gas_price: cosmwasm_std::Decimal::one(),
+                refund: "refund".into(),
+            },
+        ),
+    ] {
+        let msg: ExecuteMsg = from_json(json.as_bytes()).unwrap();
+        let response = execute(
+            native_deps(&mut deps),
+            mock_env(),
+            message_info(&sender, &[]),
+            msg.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            response.messages[0].msg,
+            cosmwasm_std::CosmosMsg::Custom(expected)
+        );
+        assert!(execute(
+            native_deps(&mut deps),
+            mock_env(),
+            message_info(&sender, &cosmwasm_std::coins(1, "ugas")),
+            msg
+        )
+        .is_err());
+    }
+}
+
 struct InvalidTimer;
 impl Operation for InvalidTimer {
     const KIND: &'static str = durable_runtime::native::SLEEP_BLOCKS_KIND;
