@@ -8,6 +8,100 @@ use native_async::{host::Keeper, runtime::*, *};
 fn management(value: serde_json::Value) -> RuntimeMsg {
     serde_json::from_value(value).expect("management ABI")
 }
+
+#[test]
+fn public_task_query_projects_lifecycle_without_internal_fields() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    let query = |s: &dyn Storage, height| -> serde_json::Value {
+        cosmwasm_std::from_json(
+            rt.query(
+                &api,
+                s,
+                height,
+                RuntimeQuery::Task {
+                    contract: c.to_string(),
+                    task_id: id,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let initial = query(&s, 1);
+    assert_eq!(initial.as_object().unwrap().len(), 15);
+    for private in [
+        "queue_key",
+        "expiry_key",
+        "storage_fee",
+        "charged",
+        "reserved",
+    ] {
+        assert!(initial.get(private).is_none(), "exposed {private}");
+    }
+    assert_eq!(initial["last_attempt"], serde_json::Value::Null);
+    assert_eq!(initial["state"], serde_json::Value::Null);
+    host.outcome = PollOutcome::Pending {
+        state: Binary::from(b"continuation"),
+        wait: Wait::Height { height: 4 },
+    };
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(query(&s, 2)["status"], "waiting");
+    assert_eq!(query(&s, 2)["last_attempt"], 2);
+    assert_eq!(query(&s, 20)["status"], "expired");
+    host.outcome = PollOutcome::Complete {
+        output: Binary::from(b"done"),
+    };
+    rt.run_block(&mut s, 4, &mut host).unwrap();
+    let completed = query(&s, 4);
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(completed["output"], "ZG9uZQ==");
+    assert_eq!(completed["error"], serde_json::Value::Null);
+}
+
+#[test]
+fn public_task_query_preserves_typed_pause_and_failed_output_separation() {
+    for fails in [false, true] {
+        let (rt, api, mut s, c, mut host) = setup();
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        if fails {
+            host.outcome = PollOutcome::Fail {
+                error: "program failed".into(),
+            };
+        } else {
+            host.gas = 45;
+        }
+        rt.run_block(&mut s, 2, &mut host).unwrap();
+        let response: TaskResponse = cosmwasm_std::from_json(
+            rt.query(
+                &api,
+                &s,
+                2,
+                RuntimeQuery::Task {
+                    contract: c.to_string(),
+                    task_id: id,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response.last_attempt, Some(2));
+        assert_eq!(response.output, None);
+        if fails {
+            assert_eq!(response.status, TaskStatus::Failed);
+            assert_eq!(response.error.as_deref(), Some("program failed"));
+        } else {
+            assert_eq!(
+                response.status,
+                TaskStatus::Paused {
+                    reason: PauseReason::OutOfGas,
+                    resume: ResumeState::Runnable
+                }
+            );
+            assert_eq!(response.error, None);
+        }
+    }
+}
 fn funding(rt: &Runtime, api: &MockApi, s: &dyn Storage, c: &Addr, id: u64) -> TaskFunding {
     cosmwasm_std::from_json(
         rt.keeper

@@ -10,6 +10,27 @@ pub struct TaskProgram {
     pub input: Binary,
 }
 
+/// Public execution query DTO. Funding is available separately through TaskFunding.
+/// Optional fields are explicit JSON nulls; storage indexes are never exposed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TaskResponse {
+    pub contract: String,
+    pub task_id: u64,
+    pub program: TaskProgram,
+    pub code_checksum: Binary,
+    pub status: crate::TaskStatus,
+    pub wait_sequence: u64,
+    pub state: Option<Binary>,
+    pub wait: Option<Wait>,
+    pub inbox: Option<Resolution>,
+    pub output: Option<Binary>,
+    pub error: Option<String>,
+    pub last_attempt: Option<u64>,
+    pub expires_at: u64,
+    pub retain_until: u64,
+    pub allocated_bytes: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PollRequest {
     pub task_id: u64,

@@ -1,4 +1,4 @@
-use native_async::{PollResponse, RuntimeMsg, TaskSudoMsg};
+use native_async::{PollResponse, RuntimeMsg, TaskResponse, TaskSudoMsg};
 use serde::{de::DeserializeOwned, Serialize};
 
 fn roundtrip<T: DeserializeOwned + Serialize>(bytes: &[u8]) {
@@ -9,6 +9,21 @@ fn roundtrip<T: DeserializeOwned + Serialize>(bytes: &[u8]) {
 
 #[test]
 fn shared_go_rust_wire_fixtures() {
+    roundtrip::<TaskResponse>(include_bytes!(
+        "../../../fixtures/native-async/v1/task-runnable.json"
+    ));
+    roundtrip::<TaskResponse>(include_bytes!(
+        "../../../fixtures/native-async/v1/task-paused.json"
+    ));
+    roundtrip::<TaskResponse>(include_bytes!(
+        "../../../fixtures/native-async/v1/task-completed.json"
+    ));
+    roundtrip::<TaskResponse>(include_bytes!(
+        "../../../fixtures/native-async/v1/task-failed.json"
+    ));
+    roundtrip::<TaskResponse>(include_bytes!(
+        "../../../fixtures/native-async/v1/task-expired.json"
+    ));
     roundtrip::<RuntimeMsg>(include_bytes!(
         "../../../fixtures/native-async/v1/extend-lease.json"
     ));

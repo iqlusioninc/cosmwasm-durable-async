@@ -356,12 +356,32 @@ impl Runtime {
     ) -> StdResult<Binary> {
         match msg {
             RuntimeQuery::Funding(msg) => self.keeper.query(api, s, h, msg),
-            RuntimeQuery::Task { contract, task_id } => cosmwasm_std::to_json_binary(&self.task(
-                s,
-                &api.addr_validate(&contract)?,
-                task_id,
-                h,
-            )?),
+            RuntimeQuery::Task { contract, task_id } => {
+                let task = self.task(s, &api.addr_validate(&contract)?, task_id, h)?;
+                let funding: TaskFunding = cosmwasm_std::from_json(self.keeper.query(
+                    api,
+                    s,
+                    h,
+                    SchedulerQuery::TaskFunding { contract, task_id },
+                )?)?;
+                cosmwasm_std::to_json_binary(&TaskResponse {
+                    contract: task.contract,
+                    task_id: task.task_id,
+                    program: task.program,
+                    code_checksum: task.code_checksum,
+                    status: funding.status,
+                    wait_sequence: task.wait_sequence,
+                    state: task.state,
+                    wait: task.wait,
+                    inbox: task.inbox,
+                    output: task.output,
+                    error: task.error,
+                    last_attempt: task.last_attempt,
+                    expires_at: task.expires_at,
+                    retain_until: task.retain_until,
+                    allocated_bytes: task.allocated_bytes,
+                })
+            }
         }
     }
 

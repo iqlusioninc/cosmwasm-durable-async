@@ -5,3 +5,5 @@ These shared wire fixtures pin the Rust/Go serialization boundary. Addresses are
 The initial poll uses wait sequence 0. A newly created first wait uses sequence 1. Each resumed poll receives the consumed wait's sequence; an operation prepared by that poll uses the next sequence.
 
 Consumers should decode into their actual protocol types and re-encode to semantically identical JSON. They must not compare two untyped JSON decoders and call that cross-language ABI validation.
+
+The `task-*.json` files encode the public `TaskResponse`, including nullable execution fields and structured paused status. They intentionally replace backend-specific task storage JSON before release. Retention heights in fixtures are illustrative; each backend reports its actual retention policy.
