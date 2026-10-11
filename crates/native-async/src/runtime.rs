@@ -138,6 +138,14 @@ fn ready_prefix(c: &str) -> Vec<u8> {
 fn member_key(c: &str) -> Vec<u8> {
     [b"na2/member/".as_slice(), c.as_bytes()].concat()
 }
+fn remove_empty_ring(s: &mut dyn Storage, c: &str) {
+    if first(s, &ready_prefix(c)).is_none() {
+        if let Some(key) = s.get(&member_key(c)) {
+            s.remove(&key);
+            s.remove(&member_key(c));
+        }
+    }
+}
 fn save(s: &mut dyn Storage, t: &ExecutionTask) -> StdResult<()> {
     put(s, &task_key(&t.contract, t.task_id), t)
 }
@@ -221,17 +229,44 @@ impl Runtime {
         report.maintenance_gas_used += self.config.maintenance_gas_per_item;
         true
     }
-    /// Covers encoded records, bounded index overhead, and worst-case escaped
-    /// JSON inbox bytes. All counters/queue keys remain host-owned.
+    /// Reserve maximum-width accounting, lifecycle and queue metadata, rather
+    /// than today's encoding. Mandatory settlement and pause recording must
+    /// never become quota failures after an admitted poll has spent gas.
     fn check_quota(&self, s: &dyn Storage, t: &ExecutionTask) -> StdResult<()> {
-        let funding = host::load(s, &Addr::unchecked(&t.contract), t.task_id)?;
+        let mut funding = host::load(s, &Addr::unchecked(&t.contract), t.task_id)?;
         let inbox_reserve = match t.wait {
             Some(Wait::Operation {
                 max_result_bytes, ..
-            }) if t.inbox.is_none() => u64::from(max_result_bytes) * 6 + 128,
+            }) => u64::from(max_result_bytes) * 6 + 128,
             _ => 0,
         };
-        let used = cosmwasm_std::to_json_vec(t)?.len() as u64
+        let mut reserved = t.clone();
+        reserved.wait_sequence = u64::MAX;
+        reserved.last_attempt = Some(u64::MAX);
+        reserved.charged = Uint128::MAX;
+        reserved.reserved = Uint128::MAX;
+        reserved.storage_fee = Uint128::MAX;
+        reserved.allocated_bytes = u64::MAX;
+        reserved.expires_at = u64::MAX;
+        reserved.retain_until = u64::MAX;
+        reserved.status = ExecutionStatus::Completed; // longest execution status
+        reserved.queue_key =
+            Some(vec![0; (ready_prefix(&t.contract).len() + 8).max(b"na2/due/".len() + 16)].into());
+        if inbox_reserve != 0 {
+            reserved.inbox = None;
+        }
+        funding.available = Uint128::MAX;
+        funding.reserved = Uint128::MAX;
+        funding.cumulative_execution_fees = Uint128::MAX;
+        funding.max_attempt_charge = Uint128::MAX;
+        funding.storage_lease_paid = Uint128::MAX;
+        funding.allocated_bytes = u64::MAX;
+        funding.expires_at = u64::MAX;
+        funding.status = TaskStatus::Paused {
+            reason: PauseReason::InsufficientFunds,
+            resume: ResumeState::Runnable,
+        };
+        let used = cosmwasm_std::to_json_vec(&reserved)?.len() as u64
             + cosmwasm_std::to_json_vec(&funding)?.len() as u64
             + 1024
             + inbox_reserve;
@@ -590,6 +625,9 @@ impl Runtime {
             };
             host::save(&mut cache, c, &funding)?;
         }
+        if !cancel {
+            self.check_quota(&cache, &t)?;
+        }
         save(&mut cache, &t)?;
         cache.commit();
         Ok(response)
@@ -606,6 +644,7 @@ impl Runtime {
             return Err(err("already terminal"));
         }
         unqueue(s, t);
+        remove_empty_ring(s, &t.contract);
         s.remove(t.expiry_key.as_slice());
         t.status = status;
         t.wait = None;

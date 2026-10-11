@@ -819,3 +819,186 @@ fn node_fault_aborts_entire_block_without_charging_or_marking_height() {
         1
     );
 }
+
+fn register_with_quota(
+    rt: &Runtime,
+    api: &MockApi,
+    s: &mut dyn Storage,
+    c: &Addr,
+    host: &mut TestHost,
+    quota: u64,
+) -> StdResult<u64> {
+    rt.register(
+        api,
+        s,
+        1,
+        c,
+        SchedulerMsg::RegisterTask {
+            control: c.to_string(),
+            refund: c.to_string(),
+            gas_per_poll: 40,
+            max_gas_price: Decimal::one(),
+            expires_at: 20,
+            funds: Coin::new(1000u128, "ugas"),
+        },
+        TaskProgram {
+            kind: "test".into(),
+            version: 1,
+            input: Binary::default(),
+        },
+        quota,
+        host,
+    )
+}
+fn minimum_quota() -> u64 {
+    let (mut low, mut high) = (1, 4096);
+    while low < high {
+        let mid = (low + high) / 2;
+        let (rt, api, mut s, c, mut host) = setup();
+        if register_with_quota(&rt, &api, &mut s, &c, &mut host, mid).is_ok() {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    low
+}
+#[test]
+fn exact_admission_boundary_reserves_maximum_topup_encoding() {
+    let quota = minimum_quota();
+    let (rt, api, mut s, c, mut host) = setup();
+    assert!(register_with_quota(&rt, &api, &mut s, &c, &mut host, quota - 1).is_err());
+    let id = register_with_quota(&rt, &api, &mut s, &c, &mut host, quota).unwrap();
+    let before_size = runtime_records_size(&s, &c, id);
+    s.set(
+        format!("bank/{c}").as_bytes(),
+        &cosmwasm_std::to_json_vec(&Uint128::MAX).unwrap(),
+    );
+    // Available and custody become u128::MAX; no numeric-width growth can
+    // consume storage that was not reserved at admission.
+    rt.manage(
+        &api,
+        &mut s,
+        2,
+        &c,
+        SchedulerMsg::FundTask {
+            task_id: id,
+            contributor: c.to_string(),
+            funds: Coin::new(Uint128::MAX.u128() - 999, "ugas"),
+        },
+        &mut host,
+    )
+    .unwrap();
+    let after_size = runtime_records_size(&s, &c, id);
+    assert!(after_size > before_size);
+    assert!(
+        after_size + 1024 <= quota as usize,
+        "topup grew encoded records beyond the exact admitted allocation"
+    );
+}
+fn runtime_records_size(s: &dyn Storage, c: &Addr, id: u64) -> usize {
+    let task = [
+        b"na2/task/".as_slice(),
+        c.as_bytes(),
+        b"/",
+        &id.to_be_bytes(),
+    ]
+    .concat();
+    let funding = [
+        b"native-async/v1/task/".as_slice(),
+        c.as_bytes(),
+        b"/",
+        &id.to_be_bytes(),
+    ]
+    .concat();
+    s.get(&task).unwrap().len() + s.get(&funding).unwrap().len()
+}
+#[test]
+fn cancellation_churn_removes_empty_ring_before_releasing_storage() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    // Promote without polling, leaving a contract ring entry to clean up.
+    rt.config.max_visits = 0;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.manage(
+        &api,
+        &mut s,
+        2,
+        &c,
+        SchedulerMsg::CancelTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    rt.run_block(&mut s, 22, &mut host).unwrap();
+    for prefix in [b"na2/ring/".as_slice(), b"na2/member/", b"na2/ready/"] {
+        assert!(
+            !s.range(None, None, cosmwasm_std::Order::Ascending)
+                .any(|(k, _)| k.starts_with(prefix)),
+            "released task left ring storage behind"
+        );
+    }
+}
+
+#[test]
+fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
+    let quota = minimum_quota();
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register_with_quota(&rt, &api, &mut s, &c, &mut host, quota).unwrap();
+    let task_key = [
+        b"na2/task/".as_slice(),
+        c.as_bytes(),
+        b"/",
+        &id.to_be_bytes(),
+    ]
+    .concat();
+    let funding_key = [
+        b"native-async/v1/task/".as_slice(),
+        c.as_bytes(),
+        b"/",
+        &id.to_be_bytes(),
+    ]
+    .concat();
+    let mut task = rt.task(&s, &c, id, 1).unwrap();
+    let mut funding: TaskFunding = cosmwasm_std::from_json(s.get(&funding_key).unwrap()).unwrap();
+    // Model the maximum historical counters reachable through repeated funded
+    // retries, without spending 2^128 units in the fixture.
+    task.charged = Uint128::MAX.checked_sub(Uint128::new(9)).unwrap();
+    task.wait_sequence = u64::MAX;
+    task.last_attempt = Some(u64::MAX);
+    funding.cumulative_execution_fees = task.charged;
+    s.set(&task_key, &cosmwasm_std::to_json_vec(&task).unwrap());
+    s.set(&funding_key, &cosmwasm_std::to_json_vec(&funding).unwrap());
+    host.fail = true;
+    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    let mut task = rt.task(&s, &c, id, 2).unwrap();
+    assert_eq!(task.charged, Uint128::MAX);
+    assert_eq!(task.status, ExecutionStatus::Paused);
+    assert!(runtime_records_size(&s, &c, id) + 1024 <= quota as usize);
+    let mut funding: TaskFunding = cosmwasm_std::from_json(s.get(&funding_key).unwrap()).unwrap();
+    assert_eq!(funding.cumulative_execution_fees, Uint128::MAX);
+    task.last_attempt = Some(u64::MAX);
+    for reason in [
+        PauseReason::InsufficientFunds,
+        PauseReason::PriceLimit,
+        PauseReason::OutOfGas,
+        PauseReason::Trap,
+        PauseReason::MessageFailure,
+        PauseReason::InvalidResponse,
+    ] {
+        for resume in [ResumeState::Runnable, ResumeState::Waiting] {
+            funding.status = TaskStatus::Paused {
+                reason: reason.clone(),
+                resume,
+            };
+            let bytes = cosmwasm_std::to_json_vec(&task).unwrap().len()
+                + cosmwasm_std::to_json_vec(&funding).unwrap().len();
+            assert!(
+                bytes + 1024 <= quota as usize,
+                "pause metadata exceeded prepaid capacity"
+            );
+        }
+    }
+}
