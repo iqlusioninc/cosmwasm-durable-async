@@ -89,6 +89,148 @@ fn recover(result: Result<u32, WaitError>) -> u32 {
     result.unwrap_or(100)
 }
 
+#[durable_workflow(kind = "control_flow", version = 1)]
+async fn control_flow(ctx: WorkflowCtx, limit: u32) -> Result<u32, AppError> {
+    let mut total: u32 = 0;
+    let mut iterations: u32 = 0;
+    while iterations < limit {
+        iterations += 1;
+        if iterations == 1 {
+            let first: u32 = ctx
+                .wait::<NumberWait>(10)
+                .checkpoint(limit, total, iterations)
+                .await?;
+            total += first;
+        } else {
+            let later: u32 = ctx
+                .wait::<NumberWait>(total)
+                .checkpoint(limit, total, iterations)
+                .await?;
+            if later == 0 {
+                continue;
+            }
+            total += later;
+            if total > 20 {
+                break;
+            }
+        }
+    }
+    let final_value: u32 = ctx.wait::<NumberWait>(total).checkpoint(total).await?;
+    Ok(total + final_value)
+}
+
+#[test]
+fn branches_loops_break_continue_and_repeated_state_tags_resume_without_replay() {
+    let mut deps = mock_dependencies();
+    let env = environment();
+    let limits = Limits::default();
+    let registry = Registry::new(vec![runtime::registration::<control_flow::Workflow>()]).unwrap();
+    let (id, _) = runtime::start::<control_flow::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        control_flow::Input { limit: 8 },
+        &limits,
+    )
+    .unwrap();
+    for (sequence, expected_request, answer, expected_tag, expected_iterations) in [
+        (1, 10, 3, "Waiting1", Some(1)),
+        (2, 3, 0, "Waiting2", Some(2)),
+        (3, 3, 7, "Waiting2", Some(3)),
+        (4, 10, 15, "Waiting2", Some(4)),
+        (5, 25, 2, "Waiting3", None),
+    ] {
+        match runtime::load_instance(&deps.storage, id).unwrap().status {
+            Status::Waiting { state, wait } => {
+                assert_eq!(from_json::<u32>(&wait.request).unwrap(), expected_request);
+                let json = String::from_utf8(state.to_vec()).unwrap();
+                assert!(json.contains(expected_tag), "{json}");
+                if let Some(iterations) = expected_iterations {
+                    assert!(
+                        json.contains(&format!("\"iterations\":{iterations}")),
+                        "{json}"
+                    );
+                }
+                control_flow::Workflow::validate(
+                    &state,
+                    &Resolution::Outcome(Outcome::Success(to_json_binary(&answer).unwrap())),
+                )
+                .unwrap();
+                assert_eq!(
+                    control_flow::Workflow::operation(&state).unwrap(),
+                    NumberWait::KIND
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        runtime::resume(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&env.contract.address, &[]),
+            id,
+            sequence,
+            Outcome::Success(to_json_binary(&answer).unwrap()),
+            &registry,
+            &limits,
+        )
+        .unwrap();
+    }
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Completed { output } => assert_eq!(from_json::<u32>(&output).unwrap(), 27),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn zero_iteration_loop_skips_branch_waits_and_propagates_failure() {
+    let mut deps = mock_dependencies();
+    let env = environment();
+    let limits = Limits::default();
+    let registry = Registry::new(vec![runtime::registration::<control_flow::Workflow>()]).unwrap();
+    let (id, _) = runtime::start::<control_flow::Workflow>(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&Addr::unchecked("creator"), &[]),
+        control_flow::Input { limit: 0 },
+        &limits,
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Waiting { state, wait } => {
+            assert_eq!(from_json::<u32>(&wait.request).unwrap(), 0);
+            assert_eq!(
+                String::from_utf8(state.to_vec()).unwrap(),
+                r#"{"Waiting3":{"total":0}}"#
+            );
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    runtime::resume(
+        deps.as_mut(),
+        env.clone(),
+        message_info(&env.contract.address, &[]),
+        id,
+        1,
+        Outcome::Error {
+            code: "failed".into(),
+            message: "remote".into(),
+        },
+        &registry,
+        &limits,
+    )
+    .unwrap();
+    match runtime::load_instance(&deps.storage, id).unwrap().status {
+        Status::Failed { error } => assert_eq!(
+            from_json::<AppError>(&error).unwrap(),
+            AppError::Wait(WaitError::Remote {
+                code: "failed".into(),
+                message: "remote".into()
+            })
+        ),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
 #[durable_workflow(kind = "recovery", version = 1)]
 async fn recovery(ctx: WorkflowCtx) -> Result<u32, AppError> {
     let result: Result<u32, WaitError> = ctx.wait::<NumberWait>(1).checkpoint().await;

@@ -35,6 +35,7 @@ pub(crate) struct ParsedWorkflow {
     pub error: Type,
     pub waits: Vec<Wait>,
     pub segments: Vec<Vec<Stmt>>,
+    pub flow: Option<crate::flow::Graph>,
 }
 
 #[derive(Clone)]
@@ -125,6 +126,21 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
             },
         );
         inputs.push(binding);
+    }
+    if crate::flow::needed(&item.block) {
+        let (flow, waits) = crate::flow::lower(&item.block, &context, &inputs)?;
+        return Ok(ParsedWorkflow {
+            item,
+            kind,
+            version,
+            context,
+            inputs,
+            output,
+            error,
+            waits,
+            segments: Vec::new(),
+            flow: Some(flow),
+        });
     }
     let mut waits = Vec::new();
     let mut segments = vec![Vec::new()];
@@ -265,6 +281,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
         error,
         waits,
         segments,
+        flow: None,
     })
 }
 
@@ -350,7 +367,7 @@ fn result_types(output: &ReturnType) -> syn::Result<(Type, Type)> {
     ))
 }
 
-fn simple_pattern(pattern: &Pat) -> syn::Result<(&Ident, bool)> {
+pub(crate) fn simple_pattern(pattern: &Pat) -> syn::Result<(&Ident, bool)> {
     let pattern = if let Pat::Type(pattern) = pattern {
         pattern.pat.as_ref()
     } else {
@@ -463,7 +480,7 @@ fn anchor_source_paths(item: &mut ItemFn) -> syn::Result<()> {
     anchor.error.map_or(Ok(()), Err)
 }
 
-fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<()> {
+pub(crate) fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<()> {
     for attribute in attributes {
         if attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr") {
             return Err(syn::Error::new_spanned(attribute, "conditional compilation on workflow arguments or statements is not supported; conditionally compile the whole workflow"));
@@ -472,7 +489,10 @@ fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<(
     Ok(())
 }
 
-fn check_omitted_expression(expression: &Expr, omitted: &BTreeSet<String>) -> syn::Result<()> {
+pub(crate) fn check_omitted_expression(
+    expression: &Expr,
+    omitted: &BTreeSet<String>,
+) -> syn::Result<()> {
     let mut names = OmittedNames {
         omitted: omitted.clone(),
         error: None,
@@ -555,7 +575,7 @@ impl<'a> Visit<'a> for OmittedNames {
     }
 }
 
-fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
+pub(crate) fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
     match local.init.as_ref()?.expr.as_ref() {
         Expr::Await(awaited) => Some((awaited, false)),
         Expr::Try(tried) => {
@@ -569,7 +589,10 @@ fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
     }
 }
 
-fn wait_expression(expression: &Expr, context: &Ident) -> syn::Result<(Type, Expr, Vec<Ident>)> {
+pub(crate) fn wait_expression(
+    expression: &Expr,
+    context: &Ident,
+) -> syn::Result<(Type, Expr, Vec<Ident>)> {
     let invalid = || {
         syn::Error::new_spanned(
             expression,
@@ -616,7 +639,7 @@ fn wait_expression(expression: &Expr, context: &Ident) -> syn::Result<(Type, Exp
     Ok((operation.clone(), wait.args.first().unwrap().clone(), names))
 }
 
-fn owned_type(ty: &Type) -> syn::Result<()> {
+pub(crate) fn owned_type(ty: &Type) -> syn::Result<()> {
     #[derive(Default)]
     struct OwnedType(Option<syn::Error>);
     impl<'a> Visit<'a> for OwnedType {
@@ -664,7 +687,7 @@ fn owned_type(ty: &Type) -> syn::Result<()> {
     owned.0.map_or(Ok(()), Err)
 }
 
-fn restricted_expression(expression: &Expr) -> syn::Result<()> {
+pub(crate) fn restricted_expression(expression: &Expr) -> syn::Result<()> {
     let mut restriction = Restrictions::default();
     restriction.visit_expr(expression);
     restriction.finish()

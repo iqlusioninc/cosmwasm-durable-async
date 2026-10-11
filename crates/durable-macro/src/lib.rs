@@ -3,6 +3,7 @@
 use proc_macro::TokenStream;
 
 mod expand;
+mod flow;
 mod parse;
 
 /// Define a versioned workflow using top-level durable waits and explicit checkpoints.

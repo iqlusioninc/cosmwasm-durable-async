@@ -14,6 +14,7 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
         error,
         waits,
         segments,
+        flow,
     } = workflow;
     let source_context_type = match item.sig.inputs.first().unwrap() {
         syn::FnArg::Typed(argument) => &argument.ty,
@@ -55,14 +56,18 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
     });
     let start_prelude =
         quote!(#[allow(unused_mut)] let Input { #(#input_pattern),* } = #binary_input;);
-    let start_body = segment(
-        &context,
-        &segments[0],
-        start_prelude,
-        waits.first(),
-        variants.first(),
-        &types,
-    );
+    let start_body = if let Some(graph) = &flow {
+        graph.execute(0, start_prelude, &context, &waits, &variants, &types)
+    } else {
+        segment(
+            &context,
+            &segments[0],
+            start_prelude,
+            waits.first(),
+            variants.first(),
+            &types,
+        )
+    };
     let resume_arms = waits.iter().enumerate().map(|(index, wait)| {
         let variant = &variants[index];
         let awaited_value = hidden("__durable_awaited_value");
@@ -81,7 +86,7 @@ pub(crate) fn expand(workflow: ParsedWorkflow) -> TokenStream {
             #[allow(unused_mut)]
             #(#local_attributes)* let #local_pattern = #bound_value;
         };
-        let body = segment(&context, &segments[index + 1], prelude, waits.get(index + 1), variants.get(index + 1), &types);
+        let body = if let Some(graph) = &flow { graph.execute(graph.resumes[index], prelude, &context, &waits, &variants, &types) } else { segment(&context, &segments[index + 1], prelude, waits.get(index + 1), variants.get(index + 1), &types) };
         quote! {
             #state_type::#variant { #(#restored),* } => {
                 let #awaited_value = ::durable_runtime::decode_resolution::<#operation>(#resolution)?;
@@ -176,10 +181,10 @@ fn restore_bindings(bindings: &[Binding]) -> TokenStream {
     quote!(#(#declarations)*)
 }
 
-struct SegmentTypes<'a> {
-    output: &'a syn::Type,
-    error: &'a syn::Type,
-    state: &'a syn::Ident,
+pub(crate) struct SegmentTypes<'a> {
+    pub output: &'a syn::Type,
+    pub error: &'a syn::Type,
+    pub state: &'a syn::Ident,
 }
 
 fn segment(
