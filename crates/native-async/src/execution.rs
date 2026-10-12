@@ -139,6 +139,12 @@ pub enum RuntimeMsg {
 }
 impl CustomMsg for RuntimeMsg {}
 
+impl From<crate::SchedulerMsg> for RuntimeMsg {
+    fn from(msg: crate::SchedulerMsg) -> Self {
+        RuntimeMsg::Funding(msg)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeQuery {

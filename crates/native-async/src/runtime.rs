@@ -108,6 +108,12 @@ pub struct BlockReport {
     pub prunes: u32,
     pub gas_used: u64,
     pub maintenance_gas_used: u64,
+    /// Terminal refunds the refund address rejected, paid instead to the
+    /// controller or, failing that, the owning contract.
+    pub redirected_refunds: u32,
+    /// Terminal transitions whose refund all three recipients rejected; the
+    /// escrow stays in the escrow account rather than halting the block.
+    pub stranded_refunds: u32,
 }
 #[derive(Serialize, Deserialize)]
 struct Reference {
@@ -237,7 +243,7 @@ impl Runtime {
         let inbox_reserve = match t.wait {
             Some(Wait::Operation {
                 max_result_bytes, ..
-            }) => u64::from(max_result_bytes) * 6 + 128,
+            }) => crate::inbox_reserve(max_result_bytes),
             _ => 0,
         };
         let mut reserved = t.clone();
@@ -268,7 +274,7 @@ impl Runtime {
         };
         let used = cosmwasm_std::to_json_vec(&reserved)?.len() as u64
             + cosmwasm_std::to_json_vec(&funding)?.len() as u64
-            + 1024
+            + crate::METADATA_ALLOWANCE
             + inbox_reserve;
         if used > t.allocated_bytes {
             return Err(err("encoded task and inbox exceed storage allocation"));
@@ -703,10 +709,15 @@ impl Runtime {
         t.inbox = Some(resolution);
         if t.status != ExecutionStatus::Paused {
             if scheduler_phase {
+                t.status = ExecutionStatus::Runnable;
                 schedule(s, &mut t, next(h)?)?;
             } else {
                 ready(s, &mut t)?;
             }
+            // Keep the public status in step with the Go adapter's delivery.
+            let mut funding = host::load(s, c, id)?;
+            funding.status = TaskStatus::Runnable;
+            host::save(s, c, &funding)?;
         }
         self.check_quota(s, &t)?;
         save(s, &t)
@@ -769,12 +780,66 @@ impl Runtime {
         Ok(response)
     }
 
+    /// Scheduler-driven terminal transitions must not fail the block. A refund
+    /// the bank rejects goes to the controller, then to the owning contract;
+    /// if all three reject it, it is left in escrow and counted instead.
+    fn settle(
+        &self,
+        s: &mut dyn Storage,
+        t: &mut ExecutionTask,
+        status: ExecutionStatus,
+        host: &mut impl PollHost,
+        report: &mut BlockReport,
+    ) -> StdResult<()> {
+        let f = host::load(s, &Addr::unchecked(&t.contract), t.task_id)?;
+        let mut tried: Vec<String> = Vec::new();
+        for recipient in [f.refund.clone(), f.control, t.contract.clone()] {
+            if tried.contains(&recipient) {
+                continue;
+            }
+            let mut attempt = t.clone();
+            let mut cache = Cache::new(s);
+            if self
+                .finish_with(
+                    &mut cache,
+                    &mut attempt,
+                    status.clone(),
+                    host,
+                    Some(&recipient),
+                )
+                .is_ok()
+            {
+                cache.commit();
+                *t = attempt;
+                if recipient != f.refund {
+                    report.redirected_refunds += 1;
+                }
+                return Ok(());
+            }
+            tried.push(recipient);
+        }
+        report.stranded_refunds += 1;
+        self.finish_with(s, t, status, host, None)
+    }
+
     fn finish(
         &self,
         s: &mut dyn Storage,
         t: &mut ExecutionTask,
         status: ExecutionStatus,
         host: &mut impl PollHost,
+    ) -> StdResult<()> {
+        let refund = host::load(s, &Addr::unchecked(&t.contract), t.task_id)?.refund;
+        self.finish_with(s, t, status, host, Some(&refund))
+    }
+
+    fn finish_with(
+        &self,
+        s: &mut dyn Storage,
+        t: &mut ExecutionTask,
+        status: ExecutionStatus,
+        host: &mut impl PollHost,
+        recipient: Option<&str>,
     ) -> StdResult<()> {
         if terminal(t) {
             return Err(err("already terminal"));
@@ -789,15 +854,16 @@ impl Runtime {
         t.program.input = Binary::default();
         let c = Addr::unchecked(&t.contract);
         let mut f = host::load(s, &c, t.task_id)?;
-        if !f.available.is_zero() {
+        if let Some(recipient) = recipient.filter(|_| !f.available.is_zero()) {
             host.transfer(
                 s,
                 &self.keeper.escrow,
-                &Addr::unchecked(&f.refund),
+                &Addr::unchecked(recipient),
                 &Coin::new(f.available.u128(), &self.keeper.config.denom),
             )?;
-            f.available = Uint128::zero();
         }
+        // An unrefunded balance stays in the escrow account (surplus backing).
+        f.available = Uint128::zero();
         f.status = match t.status {
             ExecutionStatus::Completed => TaskStatus::Completed,
             ExecutionStatus::Failed => TaskStatus::Failed,
@@ -920,7 +986,13 @@ impl Runtime {
             cache.remove(&key);
             let mut t = load(&cache, &r.contract, r.id)?;
             if !terminal(&t) {
-                self.finish(&mut cache, &mut t, ExecutionStatus::Expired, host)?;
+                self.settle(
+                    &mut cache,
+                    &mut t,
+                    ExecutionStatus::Expired,
+                    host,
+                    &mut report,
+                )?;
                 save(&mut cache, &t)?;
             }
             cache.commit();
@@ -1121,10 +1193,10 @@ impl Runtime {
                 host::save(s, &addr, &f)?;
                 match result {
                     Ok(PollOutcome::Complete { .. }) => {
-                        self.finish(s, &mut t, ExecutionStatus::Completed, host)?
+                        self.settle(s, &mut t, ExecutionStatus::Completed, host, &mut report)?
                     }
                     Ok(PollOutcome::Fail { .. }) => {
-                        self.finish(s, &mut t, ExecutionStatus::Failed, host)?
+                        self.settle(s, &mut t, ExecutionStatus::Failed, host, &mut report)?
                     }
                     _ => {}
                 }

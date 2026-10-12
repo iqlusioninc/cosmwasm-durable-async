@@ -562,6 +562,9 @@ impl PollHost for TestHost {
         to: &Addr,
         coin: &Coin,
     ) -> StdResult<()> {
+        if store.get(format!("bank/blocked/{to}").as_bytes()).is_some() {
+            return Err(cosmwasm_std::StdError::generic_err("send restricted"));
+        }
         for (who, debit) in [(from, true), (to, false)] {
             let key = format!("bank/{who}");
             let amount: Uint128 = store
@@ -1643,5 +1646,153 @@ fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_stat
             assert_eq!(after, before, "{}", case.name);
             assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 0);
         }
+    }
+}
+
+#[test]
+fn delivery_marks_funding_runnable_in_both_phases() {
+    for scheduler_phase in [false, true] {
+        let (rt, api, mut store, c, mut host) = setup();
+        let id = register(&rt, &api, &mut store, &c, &mut host);
+        host.outcome = PollOutcome::Pending {
+            state: Binary::from(b"saved".as_slice()),
+            wait: Wait::Operation {
+                resolver: "service".into(),
+                deadline: 5,
+                max_result_bytes: 30,
+            },
+        };
+        rt.run_block(&mut store, 2, &mut host).unwrap();
+        assert_eq!(
+            funding(&rt, &api, &store, &c, id).status,
+            TaskStatus::Waiting
+        );
+        let good = Resolution::Success {
+            data: Binary::from(b"yes".as_slice()),
+        };
+        rt.deliver(&mut store, 3, &c, id, 1, "service", good, scheduler_phase)
+            .unwrap();
+        assert_eq!(
+            funding(&rt, &api, &store, &c, id).status,
+            TaskStatus::Runnable,
+            "scheduler_phase={scheduler_phase}"
+        );
+        assert_eq!(
+            rt.task(&store, &c, id, 3).unwrap().status,
+            ExecutionStatus::Runnable,
+            "scheduler_phase={scheduler_phase}"
+        );
+    }
+}
+
+fn bank(store: &dyn Storage, who: &Addr) -> Uint128 {
+    store
+        .get(format!("bank/{who}").as_bytes())
+        .map(|v| cosmwasm_std::from_json(v).unwrap())
+        .unwrap_or_default()
+}
+
+#[test]
+fn rejected_refund_never_blocks_scheduler_terminal_transitions() {
+    // Completion in a poll, and expiry in maintenance.
+    for expire in [false, true] {
+        let (rt, api, mut store, c, mut host) = setup();
+        let id = register(&rt, &api, &mut store, &c, &mut host);
+        if expire {
+            host.outcome = PollOutcome::Pending {
+                state: Binary::from(b"saved".as_slice()),
+                wait: Wait::Height { height: 19 },
+            };
+            rt.run_block(&mut store, 2, &mut host).unwrap();
+        }
+        store.set(format!("bank/blocked/{c}").as_bytes(), b"1");
+        let escrow_before = bank(&store, &rt.keeper.escrow);
+        let height = if expire { 20 } else { 2 };
+        let report = rt.run_block(&mut store, height, &mut host).unwrap();
+        assert_eq!(report.stranded_refunds, 1, "expire={expire}");
+        let task = rt.task(&store, &c, id, height).unwrap();
+        let expected = if expire {
+            ExecutionStatus::Expired
+        } else {
+            ExecutionStatus::Completed
+        };
+        assert_eq!(task.status, expected);
+        let funds = funding(&rt, &api, &store, &c, id);
+        assert!(funds.available.is_zero());
+        // The unrefunded escrow stays in the escrow account; only fees left it.
+        assert!(bank(&store, &rt.keeper.escrow) >= escrow_before - task.charged);
+        assert!(!bank(&store, &rt.keeper.escrow).is_zero());
+        // Later blocks keep making progress.
+        rt.run_block(&mut store, height + 1, &mut host).unwrap();
+    }
+}
+
+#[test]
+fn rejected_refund_fails_user_cancellation_without_side_effects() {
+    let (rt, api, mut store, c, mut host) = setup();
+    let id = register(&rt, &api, &mut store, &c, &mut host);
+    store.set(format!("bank/blocked/{c}").as_bytes(), b"1");
+    let before = snapshot(&store);
+    assert!(rt
+        .execute(
+            &api,
+            &mut store,
+            1,
+            &c,
+            management(serde_json::json!({"funding": {"cancel_task": {"task_id": id, "actor": c.to_string()}}})),
+            false,
+            &mut host,
+        )
+        .is_err());
+    assert_eq!(snapshot(&store), before);
+}
+
+#[test]
+fn rejected_refund_falls_back_to_control_then_owner() {
+    for blocked in 0..4 {
+        let (rt, api, mut store, c, mut host) = setup();
+        let (refund, control) = (api.addr_make("refund"), api.addr_make("control"));
+        let id = rt
+            .register(
+                &api,
+                &mut store,
+                1,
+                &c,
+                SchedulerMsg::RegisterTask {
+                    control: control.to_string(),
+                    refund: refund.to_string(),
+                    gas_per_poll: 40,
+                    max_gas_price: Decimal::one(),
+                    expires_at: 20,
+                    funds: Coin::new(1000u128, "ugas"),
+                },
+                TaskProgram {
+                    kind: "test".into(),
+                    version: 1,
+                    input: Binary::default(),
+                },
+                4096,
+                &mut host,
+            )
+            .unwrap();
+        let order = [&refund, &control, &c];
+        for who in &order[..blocked] {
+            store.set(format!("bank/blocked/{who}").as_bytes(), b"1");
+        }
+        let before: Vec<Uint128> = order.iter().map(|a| bank(&store, a)).collect();
+        let report = rt.run_block(&mut store, 2, &mut host).unwrap();
+        assert_eq!(
+            report.redirected_refunds,
+            u32::from(blocked == 1 || blocked == 2)
+        );
+        assert_eq!(report.stranded_refunds, u32::from(blocked == 3));
+        for (i, who) in order.iter().enumerate() {
+            let gained = bank(&store, who) - before[i];
+            assert_eq!(!gained.is_zero(), i == blocked, "blocked={blocked} i={i}");
+        }
+        assert_eq!(
+            funding(&rt, &api, &store, &c, id).refund,
+            refund.to_string()
+        );
     }
 }

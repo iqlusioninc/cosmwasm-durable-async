@@ -14,7 +14,9 @@ bash integration/wasmd/test.sh
 ```
 
 `test.sh` delegates to `test-upstream.sh`: both now build the required patched
-native runtime and run keeper plus upstream-app tests. Requirements include
+native runtime and run keeper plus upstream-app tests. Each run's temporary
+build directories (about 2 GB) are removed on exit; set `NATIVE_ASYNC_KEEP=1`
+to keep them and print the `GOWORK` for targeted reruns. Requirements include
 `rustc 1.99.0 (b940084d7 2026-09-28)`, Cargo, a C linker, curl, tar and ripgrep.
 The verified native build platform is macOS arm64; Linux naming is wired but
 has not been exercised by this acceptance run.

@@ -51,6 +51,17 @@ fn policy_message(
     Ok(Response::new().add_message(CosmosMsg::Custom(msg)))
 }
 
+/// Allocation both hosts reserve for an operation wait's inbox: worst-case
+/// escaped JSON of `max_result_bytes` plus framing. Hosts add a fixed
+/// [`METADATA_ALLOWANCE`] on top, so a task waiting on such an operation needs
+/// more than `METADATA_ALLOWANCE + inbox_reserve(max_result_bytes)` bytes.
+pub const fn inbox_reserve(max_result_bytes: u32) -> u64 {
+    max_result_bytes as u64 * 6 + 128
+}
+
+/// Fixed per-task allowance for counters, queue keys and diagnostics.
+pub const METADATA_ALLOWANCE: u64 = 1024;
+
 /// Accept only a dedicated gas deposit. Business funds must be split by the
 /// application's start handler, not passed to this helper.
 pub fn attached_gas(info: &MessageInfo, denom: &str) -> StdResult<Coin> {
@@ -62,25 +73,28 @@ pub fn attached_gas(info: &MessageInfo, denom: &str) -> StdResult<Coin> {
     }
 }
 
-pub fn fund_task(
+/// Generic over the contract's custom message: `Response<RuntimeMsg>` wraps the
+/// message in `RuntimeMsg::Funding` for executable tasks; `Response<SchedulerMsg>`
+/// targets the legacy funding-only keeper.
+pub fn fund_task<T: From<SchedulerMsg>>(
     info: &MessageInfo,
     task_id: TaskId,
     denom: &str,
-) -> StdResult<Response<SchedulerMsg>> {
+) -> StdResult<Response<T>> {
     Ok(
-        Response::new().add_message(CosmosMsg::Custom(SchedulerMsg::FundTask {
+        Response::new().add_message(CosmosMsg::Custom(T::from(SchedulerMsg::FundTask {
             task_id,
             contributor: info.sender.to_string(),
             funds: attached_gas(info, denom)?,
-        })),
+        }))),
     )
 }
 
-pub fn execute_async(
+pub fn execute_async<T: From<SchedulerMsg>>(
     info: &MessageInfo,
     msg: crate::AsyncExecuteMsg,
     denom: &str,
-) -> StdResult<Response<SchedulerMsg>> {
+) -> StdResult<Response<T>> {
     use crate::AsyncExecuteMsg;
     if let AsyncExecuteMsg::FundTask { task_id } = msg {
         return fund_task(info, task_id, denom);
@@ -96,7 +110,7 @@ pub fn execute_async(
         AsyncExecuteMsg::CancelTask { task_id } => SchedulerMsg::CancelTask { task_id, actor },
         AsyncExecuteMsg::FundTask { .. } => unreachable!(),
     };
-    Ok(Response::new().add_message(CosmosMsg::Custom(msg)))
+    Ok(Response::new().add_message(CosmosMsg::Custom(T::from(msg))))
 }
 
 pub fn query_funding(

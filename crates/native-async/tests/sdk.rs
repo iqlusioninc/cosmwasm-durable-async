@@ -73,6 +73,44 @@ fn rejects_ambiguous_or_invalid_deposits() {
             sender: Addr::unchecked("sponsor"),
             funds,
         };
-        assert!(fund_task(&info, 1, "ugas").is_err());
+        assert!(fund_task::<SchedulerMsg>(&info, 1, "ugas").is_err());
+    }
+}
+
+#[test]
+fn funding_helpers_target_the_executable_runtime_envelope() {
+    let info = MessageInfo {
+        sender: Addr::unchecked("sponsor"),
+        funds: coins(17, "ugas"),
+    };
+    let fund: cosmwasm_std::Response<native_async::RuntimeMsg> =
+        fund_task(&info, 4, "ugas").unwrap();
+    let CosmosMsg::Custom(msg) = &fund.messages[0].msg else {
+        panic!("expected custom message")
+    };
+    assert_eq!(
+        cosmwasm_std::to_json_string(msg).unwrap(),
+        r#"{"funding":{"fund_task":{"task_id":4,"contributor":"sponsor","funds":{"denom":"ugas","amount":"17"}}}}"#
+    );
+    let info = MessageInfo {
+        sender: Addr::unchecked("controller"),
+        funds: vec![],
+    };
+    for (msg, expected) in [
+        (
+            native_async::AsyncExecuteMsg::ResumeTask { task_id: 4 },
+            r#"{"funding":{"resume_task":{"task_id":4,"actor":"controller"}}}"#,
+        ),
+        (
+            native_async::AsyncExecuteMsg::CancelTask { task_id: 4 },
+            r#"{"funding":{"cancel_task":{"task_id":4,"actor":"controller"}}}"#,
+        ),
+    ] {
+        let response: cosmwasm_std::Response<native_async::RuntimeMsg> =
+            native_async::execute_async(&info, msg, "ugas").unwrap();
+        let CosmosMsg::Custom(msg) = &response.messages[0].msg else {
+            panic!("expected custom message")
+        };
+        assert_eq!(cosmwasm_std::to_json_string(msg).unwrap(), expected);
     }
 }

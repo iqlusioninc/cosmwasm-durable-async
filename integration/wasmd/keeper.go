@@ -30,6 +30,8 @@ type Config struct {
 	MaxPollGas, AsyncGas, MaintenanceGas, HostReserve                       uint64
 	MaxTasks, MaxBytes, MaxLifetime, MaxMessages, MaxVisits, MaxMaintenance uint64
 	StorageByteBlockPrice, CleanupPrice                                     sdkmath.Int
+	// MaxContractTasks bounds one contract's share of MaxTasks.
+	MaxContractTasks uint64
 }
 type Keeper struct {
 	Key       storetypes.StoreKey
@@ -196,6 +198,11 @@ func (k *Keeper) clearWait(ctx sdk.Context, t *Task) {
 	t.Inbox = nil
 }
 func (k *Keeper) finish(ctx sdk.Context, t *Task, status string) error {
+	return k.finishTo(ctx, t, status, t.Refund)
+}
+
+// finishTo pays the remaining escrow to recipient; the stored Refund is kept.
+func (k *Keeper) finishTo(ctx sdk.Context, t *Task, status, recipient string) error {
 	s := k.store(ctx)
 	if t.QueueKey != nil {
 		s.Delete(t.QueueKey)
@@ -209,7 +216,7 @@ func (k *Keeper) finish(ctx sdk.Context, t *Task, status string) error {
 		t.State = nil
 	}
 	t.Program.Input = nil
-	if e := k.transfer(ctx, authtypes.NewModuleAddress(ModuleName), addr(t.Refund), amount(t.Escrow)); e != nil {
+	if e := k.transfer(ctx, authtypes.NewModuleAddress(ModuleName), addr(recipient), amount(t.Escrow)); e != nil {
 		return e
 	}
 	t.Escrow = "0"
@@ -225,6 +232,37 @@ func (k *Keeper) finish(ctx sdk.Context, t *Task, status string) error {
 	s.Set(t.ExpiryKey, taskKey(t.Owner, t.ID))
 	k.save(ctx, *t)
 	return nil
+}
+// settle is finish for scheduler paths, which must never halt the chain. If
+// the bank rejects the refund, the escrow goes to the controller, then to the
+// owning contract. If all three reject it, it stays in the module account
+// (surplus backing is valid) and an event records the stranded amount.
+func (k *Keeper) settle(ctx sdk.Context, t *Task, status string) {
+	var err error
+	tried := map[string]bool{}
+	for _, recipient := range []string{t.Refund, t.Control, t.Owner} {
+		if tried[recipient] {
+			continue
+		}
+		tried[recipient] = true
+		child, commit := ctx.CacheContext()
+		attempt := *t
+		escrow := t.Escrow
+		if err = k.finishTo(child, &attempt, status, recipient); err == nil {
+			commit()
+			*t = attempt
+			if recipient != t.Refund {
+				ctx.EventManager().EmitEvent(sdk.NewEvent("async_refund_redirected", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("refund", t.Refund), sdk.NewAttribute("recipient", recipient), sdk.NewAttribute("amount", escrow)))
+			}
+			return
+		}
+	}
+	stranded := t.Escrow
+	t.Escrow = "0"
+	if e := k.finish(ctx, t, status); e != nil {
+		panic(e)
+	}
+	ctx.EventManager().EmitEvent(sdk.NewEvent("async_refund_failed", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("refund", t.Refund), sdk.NewAttribute("amount", stranded), sdk.NewAttribute("error", err.Error())))
 }
 func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register) (uint64, error) {
 	c := k.Config
@@ -244,6 +282,9 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	if number(s, "active") >= c.MaxTasks || number(s, "bytes") > c.MaxBytes-r.AllocatedBytes {
 		return 0, fmt.Errorf("admission full")
+	}
+	if number(s, "active/"+owner.String()) >= c.MaxContractTasks {
+		return 0, fmt.Errorf("contract admission full")
 	}
 	if _, err := sdk.AccAddressFromBech32(r.Control); err != nil {
 		return 0, err

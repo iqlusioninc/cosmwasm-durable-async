@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const CONFIG: &[u8] = b"example/config";
+/// Largest service result either operation in this workflow accepts.
+const MAX_RESULT_BYTES: u32 = 65536;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstantiateMsg {
@@ -49,6 +51,12 @@ pub enum ExecuteMsg {
         gas_per_poll: u64,
         max_gas_price: cosmwasm_std::Decimal,
         refund: String,
+    },
+    /// Owner-only: return a workflow's business funds once its task is terminal.
+    /// A real application would route them on completion (for example to the
+    /// seller); this example returns them to the owner on every outcome.
+    Reclaim {
+        task_id: u64,
     },
 }
 
@@ -212,6 +220,17 @@ impl Operation for ShipmentReceived {
     }
 }
 
+/// Business funds held for a registered task, released by `Reclaim`.
+#[derive(Serialize, Deserialize)]
+struct Business {
+    coin: cosmwasm_std::Coin,
+    expires_at: u64,
+}
+
+fn business_key(task_id: u64) -> Vec<u8> {
+    format!("example/business/{task_id}").into_bytes()
+}
+
 fn payment_key(order_id: u64) -> Vec<u8> {
     format!("example/payment/{order_id}").into_bytes()
 }
@@ -291,7 +310,7 @@ pub fn instantiate(
 #[entry_point]
 pub fn execute(
     deps: DepsMut<RuntimeQuery>,
-    _: Env,
+    env: Env,
     info: MessageInfo,
     msg: ExecuteMsg,
 ) -> Result<Response<RuntimeMsg>, ContractError> {
@@ -334,6 +353,16 @@ pub fn execute(
             if gas.denom != cfg.fee_denom || gas.amount.is_zero() {
                 return Err(StdError::generic_err("invalid gas deposit").into());
             }
+            // Every poll may wait on an operation, so the host would pause the
+            // task on its first wait unless the inbox reserve fits.
+            if allocated_bytes
+                <= native_async::METADATA_ALLOWANCE + native_async::inbox_reserve(MAX_RESULT_BYTES)
+            {
+                return Err(StdError::generic_err(
+                    "allocated_bytes cannot hold the operation result reserve",
+                )
+                .into());
+            }
             let mut expected = std::collections::BTreeMap::new();
             for coin in [&business, &gas] {
                 if !coin.amount.is_zero() {
@@ -359,24 +388,66 @@ pub fn execute(
                 )
                 .into());
             }
-            // The business allocation remains in contract custody; only gas enters host escrow.
-            Ok(Response::new().add_submessage(SubMsg::reply_on_success(
-                CosmosMsg::Custom(RuntimeMsg::Register {
-                    control: info.sender.to_string(),
-                    refund: info.sender.to_string(),
-                    gas_per_poll,
-                    max_gas_price,
-                    expires_at,
-                    funds: gas,
-                    allocated_bytes,
-                    program: TaskProgram {
-                        kind: "fulfill".into(),
-                        version: 1,
-                        input: to_json_binary(&fulfill::Input { order })?,
-                    },
-                }),
-                REGISTER_REPLY,
-            )))
+            // The business allocation remains in contract custody; only gas enters
+            // host escrow. The reply records it against the host-assigned task ID.
+            let business = Business {
+                coin: business,
+                expires_at,
+            };
+            Ok(Response::new().add_submessage(
+                SubMsg::reply_on_success(
+                    CosmosMsg::Custom(RuntimeMsg::Register {
+                        control: info.sender.to_string(),
+                        refund: info.sender.to_string(),
+                        gas_per_poll,
+                        max_gas_price,
+                        expires_at,
+                        funds: gas,
+                        allocated_bytes,
+                        program: TaskProgram {
+                            kind: "fulfill".into(),
+                            version: 1,
+                            input: to_json_binary(&fulfill::Input { order })?,
+                        },
+                    }),
+                    REGISTER_REPLY,
+                )
+                .with_payload(to_json_binary(&business)?),
+            ))
+        }
+        ExecuteMsg::Reclaim { task_id } => {
+            if cfg.owner != info.sender {
+                return Err(ContractError::Unauthorized);
+            }
+            if !info.funds.is_empty() {
+                return Err(ContractError::UnexpectedFunds);
+            }
+            let key = business_key(task_id);
+            let business: Business = from_json(
+                deps.storage
+                    .get(&key)
+                    .ok_or_else(|| StdError::not_found("business funds"))?,
+            )?;
+            // A lease past expiry is terminal even if its record was pruned.
+            if env.block.height < business.expires_at {
+                let funding: native_async::TaskFunding =
+                    deps.querier
+                        .query(&QueryRequest::Custom(RuntimeQuery::Funding(
+                            SchedulerQuery::TaskFunding {
+                                contract: env.contract.address.to_string(),
+                                task_id,
+                            },
+                        )))?;
+                use native_async::TaskStatus::*;
+                if !matches!(funding.status, Completed | Failed | Cancelled | Expired) {
+                    return Err(StdError::generic_err("task is not terminal").into());
+                }
+            }
+            deps.storage.remove(&key);
+            Ok(Response::new().add_message(cosmwasm_std::BankMsg::Send {
+                to_address: cfg.owner.to_string(),
+                amount: vec![business.coin],
+            }))
         }
         ExecuteMsg::Resume {
             workflow_id,
@@ -442,14 +513,14 @@ pub fn sudo(deps: DepsMut, env: Env, msg: TaskSudoMsg) -> Result<Response, Contr
         env,
         request,
         &registry()?,
-        65536,
+        MAX_RESULT_BYTES,
     )?)
 }
 
 /// Register custom-message results are raw host JSON, unlike protobuf-wrapped
 /// Wasm execute replies. Propagate the host's task ID, never the reply ID.
 #[entry_point]
-pub fn reply(_: DepsMut<RuntimeQuery>, _: Env, reply: Reply) -> StdResult<Response<RuntimeMsg>> {
+pub fn reply(deps: DepsMut<RuntimeQuery>, _: Env, reply: Reply) -> StdResult<Response<RuntimeMsg>> {
     if reply.id != REGISTER_REPLY {
         return Err(StdError::generic_err("unknown reply id"));
     }
@@ -459,6 +530,13 @@ pub fn reply(_: DepsMut<RuntimeQuery>, _: Env, reply: Reply) -> StdResult<Respon
         .data
         .ok_or_else(|| StdError::generic_err("registration reply missing task ID"))?;
     let task_id: u64 = from_json(&data)?;
+    if !reply.payload.is_empty() {
+        let business: Business = from_json(&reply.payload)?;
+        if !business.coin.amount.is_zero() {
+            deps.storage
+                .set(&business_key(task_id), &to_json_binary(&business)?);
+        }
+    }
     Ok(Response::new().set_data(to_json_binary(&task_id)?))
 }
 

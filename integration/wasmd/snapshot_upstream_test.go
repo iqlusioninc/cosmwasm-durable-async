@@ -382,7 +382,7 @@ func TestSnapshotMissingWasmRejected(t *testing.T) {
 			abciSnapshot, err := malicious.ToABCI()
 			require.NoError(t, err)
 			var diagnostic bytes.Buffer
-			target := newSnapshotApp(t, false, log.NewLogger(&diagnostic))
+			target := newSnapshotApp(t, false, log.NewLogger(&diagnostic, log.ColorOption(false)))
 			offer, err := target.app.OfferSnapshot(&abci.RequestOfferSnapshot{Snapshot: &abciSnapshot, AppHash: source.app.LastCommitID().Hash})
 			require.NoError(t, err)
 			require.Equal(t, abci.ResponseOfferSnapshot_ACCEPT, offer.Result)

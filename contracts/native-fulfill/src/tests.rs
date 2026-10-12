@@ -294,7 +294,7 @@ fn start_splits_same_denom_and_rejects_double_counting() {
         gas_per_poll: 100,
         max_gas_price: cosmwasm_std::Decimal::one(),
         expires_at: 999999,
-        allocated_bytes: 131072,
+        allocated_bytes: 524288,
     };
     assert!(execute(
         native_deps(&mut deps),
@@ -614,4 +614,190 @@ fn generated_two_waits_use_fresh_contexts_and_next_sequence() {
         panic!("complete")
     };
     assert_eq!(from_json::<Receipt>(output).unwrap().order_id, 9);
+}
+
+fn runtime_deps(
+    status: Option<native_async::TaskStatus>,
+) -> cosmwasm_std::OwnedDeps<
+    cosmwasm_std::testing::MockStorage,
+    cosmwasm_std::testing::MockApi,
+    cosmwasm_std::testing::MockQuerier<RuntimeQuery>,
+    RuntimeQuery,
+> {
+    let querier = cosmwasm_std::testing::MockQuerier::<RuntimeQuery>::new(&[]).with_custom_handler(
+        move |query| match (query, &status) {
+            (
+                RuntimeQuery::Funding(SchedulerQuery::TaskFunding { contract, task_id }),
+                Some(status),
+            ) => cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Ok(
+                to_json_binary(&native_async::TaskFunding {
+                    task_id: *task_id,
+                    contract: contract.clone(),
+                    control: String::new(),
+                    refund: String::new(),
+                    available: cosmwasm_std::Uint128::zero(),
+                    reserved: cosmwasm_std::Uint128::zero(),
+                    cumulative_execution_fees: cosmwasm_std::Uint128::zero(),
+                    allocated_bytes: 0,
+                    storage_lease_paid: cosmwasm_std::Uint128::zero(),
+                    gas_per_poll: 0,
+                    max_gas_price: cosmwasm_std::Decimal::one(),
+                    max_attempt_charge: cosmwasm_std::Uint128::zero(),
+                    expires_at: 0,
+                    status: status.clone(),
+                })
+                .unwrap(),
+            )),
+            _ => cosmwasm_std::SystemResult::Ok(cosmwasm_std::ContractResult::Err(
+                "task not found".into(),
+            )),
+        },
+    );
+    cosmwasm_std::OwnedDeps {
+        storage: cosmwasm_std::testing::MockStorage::default(),
+        api: cosmwasm_std::testing::MockApi::default(),
+        querier,
+        custom_query_type: std::marker::PhantomData,
+    }
+}
+
+fn start_msg(business: u128, allocated_bytes: u64) -> ExecuteMsg {
+    ExecuteMsg::Start {
+        order: Order { id: 1 },
+        business: cosmwasm_std::coin(business, "uatom"),
+        gas: cosmwasm_std::coin(60, "ugas"),
+        gas_per_poll: 100,
+        max_gas_price: cosmwasm_std::Decimal::one(),
+        expires_at: 20_000,
+        allocated_bytes,
+    }
+}
+
+fn instantiate_owner(
+    deps: &mut cosmwasm_std::OwnedDeps<
+        cosmwasm_std::testing::MockStorage,
+        cosmwasm_std::testing::MockApi,
+        cosmwasm_std::testing::MockQuerier<RuntimeQuery>,
+        RuntimeQuery,
+    >,
+) -> Addr {
+    let owner = deps.api.addr_make("owner");
+    let service = deps.api.addr_make("service").to_string();
+    let mut storage = std::mem::take(&mut deps.storage);
+    let mut plain = mock_dependencies();
+    std::mem::swap(&mut plain.storage, &mut storage);
+    instantiate(
+        plain.as_mut(),
+        mock_env(),
+        message_info(&owner, &[]),
+        InstantiateMsg {
+            payment_service: service.clone(),
+            shipment_service: service,
+            deadline_blocks: 10,
+            fee_denom: "ugas".into(),
+        },
+    )
+    .unwrap();
+    deps.storage = plain.storage;
+    owner
+}
+
+#[allow(deprecated)]
+fn register_reply(payload: Binary, task_id: u64) -> cosmwasm_std::Reply {
+    cosmwasm_std::Reply {
+        id: REGISTER_REPLY,
+        payload,
+        gas_used: 1,
+        result: cosmwasm_std::SubMsgResult::Ok(cosmwasm_std::SubMsgResponse {
+            events: vec![],
+            data: Some(to_json_binary(&task_id).unwrap()),
+            msg_responses: vec![],
+        }),
+    }
+}
+
+#[test]
+fn start_rejects_allocation_below_operation_result_reserve() {
+    let mut deps = runtime_deps(None);
+    let owner = instantiate_owner(&mut deps);
+    let funds = [cosmwasm_std::coin(60, "ugas")];
+    let err = execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&owner, &funds),
+        start_msg(0, 100_000),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("allocated_bytes"), "{err}");
+    execute(
+        deps.as_mut(),
+        mock_env(),
+        message_info(&owner, &funds),
+        start_msg(0, 524_288),
+    )
+    .unwrap();
+}
+
+#[test]
+fn business_funds_are_reclaimable_only_after_task_is_terminal() {
+    for (status, height, reclaimable) in [
+        (Some(native_async::TaskStatus::Runnable), 100, false),
+        (Some(native_async::TaskStatus::Waiting), 100, false),
+        (Some(native_async::TaskStatus::Completed), 100, true),
+        (Some(native_async::TaskStatus::Cancelled), 100, true),
+        (Some(native_async::TaskStatus::Failed), 100, true),
+        // Expired records can be pruned; the lease height alone proves termination.
+        (None, 20_000, true),
+    ] {
+        let mut deps = runtime_deps(status.clone());
+        let owner = instantiate_owner(&mut deps);
+        let funds = [
+            cosmwasm_std::coin(40, "uatom"),
+            cosmwasm_std::coin(60, "ugas"),
+        ];
+        let started = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&owner, &funds),
+            start_msg(40, 524_288),
+        )
+        .unwrap();
+        let payload = started.messages[0].payload.clone();
+        reply(deps.as_mut(), mock_env(), register_reply(payload, 7)).unwrap();
+        let mut env = mock_env();
+        env.block.height = height;
+        let stranger = deps.api.addr_make("stranger");
+        assert!(execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&stranger, &[]),
+            ExecuteMsg::Reclaim { task_id: 7 },
+        )
+        .is_err());
+        let result = execute(
+            deps.as_mut(),
+            env.clone(),
+            message_info(&owner, &[]),
+            ExecuteMsg::Reclaim { task_id: 7 },
+        );
+        if !reclaimable {
+            assert!(result.is_err(), "{status:?}");
+            continue;
+        }
+        let response = result.unwrap();
+        assert_eq!(
+            response.messages[0].msg,
+            CosmosMsg::Bank(cosmwasm_std::BankMsg::Send {
+                to_address: owner.to_string(),
+                amount: vec![cosmwasm_std::coin(40, "uatom")],
+            })
+        );
+        assert!(execute(
+            deps.as_mut(),
+            env,
+            message_info(&owner, &[]),
+            ExecuteMsg::Reclaim { task_id: 7 },
+        )
+        .is_err());
+    }
 }

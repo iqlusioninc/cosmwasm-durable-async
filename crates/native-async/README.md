@@ -48,7 +48,7 @@ Delegate a query using the current contract environment:
 query_funding(deps, &env, async_query)
 ```
 
-These return `Response<SchedulerMsg>` and authoritative host query results through `SchedulerQuery`. Use `Deps<SchedulerQuery>` in the contract. Discover the fee denomination through `SchedulerQuery::FundingConfig` or a deployment configuration validated against that query. The host independently validates every coin denomination.
+`execute_async` and `fund_task` are generic over the contract's custom message. Contracts with executable tasks return `Response<RuntimeMsg>`, which wraps each message as `RuntimeMsg::Funding` (the only envelope `Runtime` and the wasmd adapter accept); `Response<SchedulerMsg>` targets only the legacy funding-only keeper. Where the response type is not otherwise pinned, name it: `fund_task::<RuntimeMsg>(...)`. Queries return authoritative host results through `SchedulerQuery`. Use `Deps<SchedulerQuery>` in the contract. Discover the fee denomination through `SchedulerQuery::FundingConfig` or a deployment configuration validated against that query. The host independently validates every coin denomination.
 
 The test contract in [tests/support/mod.rs](tests/support/mod.rs) demonstrates registration, an explicit split of business funds and initial gas funds, and the standard message routing. Its deliberately dishonest `ClaimFunds` and `FundThenFail` paths are adversarial fixtures, not recommended contract APIs.
 

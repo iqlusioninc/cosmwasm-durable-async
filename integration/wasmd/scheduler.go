@@ -119,13 +119,21 @@ func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64) (*Task, bool) {
 	k.store(ctx).Delete(key)
 	k.rotateContract(ctx, ck, owner)
 	t.QueueKey = nil
-	if terminal(t) || t.Status != "runnable" || t.LastPoll == uint64(ctx.BlockHeight()) {
+	if terminal(t) {
+		return nil, false
+	}
+	// Persist every skip so no record points at the deleted ready key.
+	if t.Status != "runnable" {
+		k.save(ctx, t)
+		return nil, false
+	}
+	if t.LastPoll == uint64(ctx.BlockHeight()) {
+		k.enqueue(ctx, &t, uint64(ctx.BlockHeight())+1)
+		k.save(ctx, t)
 		return nil, false
 	}
 	if uint64(ctx.BlockHeight()) >= t.ExpiresAt {
-		if e := k.finish(ctx, &t, "expired"); e != nil {
-			panic(e)
-		}
+		k.settle(ctx, &t, "expired")
 		return nil, false
 	}
 	price, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
@@ -184,9 +192,7 @@ func (k *Keeper) maintenanceOne(ctx sdk.Context, kind string) bool {
 		}
 	case "expiry":
 		if !terminal(t) {
-			if e := k.finish(ctx, &t, "expired"); e != nil {
-				panic(e)
-			}
+			k.settle(ctx, &t, "expired")
 		}
 	case "timer":
 		t.TimerKey = nil
@@ -383,6 +389,9 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	t.Fees = amount(t.Fees).Add(fee).String()
 	// The final transfer/update are maintenance work, paid by the prepaid cleanup
 	// and lease fees, and still count against the async block allocation.
+	// The fee was reserved from this task's escrow and the fee collector is a
+	// module account, so this fails only if the module escrow is underbacked:
+	// the invariant ValidateState treats as fatal. Halting is intentional.
 	if e := k.transfer(accounting, authtypes.NewModuleAddress(ModuleName), authtypes.NewModuleAddress(authtypes.FeeCollectorName), fee); e != nil {
 		panic(e)
 	}
@@ -391,9 +400,7 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 		if t.Status == "failing" {
 			status = "failed"
 		}
-		if e := k.finish(accounting, &t, status); e != nil {
-			panic(e)
-		}
+		k.settle(accounting, &t, status)
 	} else {
 		k.save(accounting, t)
 	}

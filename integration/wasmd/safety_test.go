@@ -87,3 +87,28 @@ func TestInflightManagementRejected(t *testing.T) {
 	ctx = ctx.WithValue(pollingKey{}, string(taskKey(owner, 1)))
 	require.ErrorContains(t, k.Management(ctx, owner, marshal(map[string]any{"cancel_task": map[string]any{"task_id": 1, "actor": owner}})), "in-flight")
 }
+
+// A runnable task polled earlier in this block is deferred, never dropped, and
+// a stale entry for a non-runnable task leaves no dangling queue key.
+func TestSelectReadyKeepsSkippedTasksConsistent(t *testing.T) {
+	ctx, k, _ := setup(t)
+	polled := Task{ID: 1, Owner: "a", Status: "runnable", LastPoll: 10, Escrow: "99999999", Fees: "0", Register: Register{GasPerPoll: 1, MaxGasPrice: "1", ExpiresAt: 100}}
+	paused := Task{ID: 2, Owner: "b", Status: "paused", Pause: "trap", Escrow: "99999999", Fees: "0", Register: Register{GasPerPoll: 1, MaxGasPrice: "1", ExpiresAt: 100}}
+	for _, p := range []*Task{&polled, &paused} {
+		k.enqueue(ctx, p, 10)
+		k.save(ctx, *p)
+	}
+	for i := 0; i < 2; i++ {
+		selected, stop := k.selectReady(ctx, 90_000_000)
+		require.False(t, stop)
+		require.Nil(t, selected)
+	}
+	got, err := k.load(ctx, "a", 1)
+	require.NoError(t, err)
+	require.Equal(t, uint64(11), got.ReadyAt)
+	require.Equal(t, indexKey("ready/a", 11, 3, ""), got.QueueKey)
+	require.Equal(t, taskKey("a", 1), k.store(ctx).Get(got.QueueKey))
+	got, err = k.load(ctx, "b", 2)
+	require.NoError(t, err)
+	require.Nil(t, got.QueueKey)
+}

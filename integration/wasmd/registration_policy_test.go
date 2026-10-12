@@ -162,3 +162,22 @@ func TestLastActiveTaskRemovesOwnerCountAndPruningKeepsIDs(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(4), id)
 }
+
+func TestPerContractAdmissionCapLeavesRoomForOthers(t *testing.T) {
+	ctx, k, keepers := setup(t)
+	k.Config.MaxContractTasks = 2
+	a, b := registrationOwner(t, ctx, k), registrationOwner(t, ctx, k)
+	for _, owner := range []sdk.AccAddress{a, b} {
+		keepers.Faucet.Fund(ctx, owner, sdk.NewInt64Coin("ugas", 5_000_000))
+	}
+	for i := 0; i < 2; i++ {
+		_, err := k.RegisterTask(ctx, a, registrationPolicy(a))
+		require.NoError(t, err)
+	}
+	before := policySnapshot(ctx, k)
+	_, err := k.RegisterTask(ctx, a, registrationPolicy(a))
+	require.ErrorContains(t, err, "contract admission full")
+	require.Equal(t, before, policySnapshot(ctx, k))
+	_, err = k.RegisterTask(ctx, b, registrationPolicy(b))
+	require.NoError(t, err)
+}
