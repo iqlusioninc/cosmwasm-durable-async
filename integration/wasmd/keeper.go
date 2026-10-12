@@ -49,6 +49,17 @@ func taskKey(owner string, id uint64) []byte { return []byte(fmt.Sprintf("task/%
 func indexKey(kind string, height, id uint64, owner string) []byte {
 	return []byte(fmt.Sprintf("%s/%020d/%020d/%s", kind, height, id, owner))
 }
+func dueKey(height, sequence uint64) []byte {
+	return []byte(fmt.Sprintf("due/%020d/%020d", height, sequence))
+}
+func bidKey(bid string, height, sequence uint64) []byte {
+	price, err := sdkmath.LegacyNewDecFromStr(bid)
+	if err != nil {
+		panic(err)
+	}
+	return []byte(fmt.Sprintf("bid/%s/%020d/%020d", bidComponent(price), height, sequence))
+}
+
 func number(s storetypes.KVStore, key string) uint64 {
 	b := s.Get([]byte(key))
 	if b == nil {
@@ -132,65 +143,34 @@ func (k *Keeper) feeAt(gas uint64, price sdkmath.LegacyDec) sdkmath.Int {
 func (k *Keeper) fee(ctx sdk.Context, gas uint64) sdkmath.Int {
 	return k.feeAt(gas, k.basePrice(ctx))
 }
-func (k *Keeper) enqueue(ctx sdk.Context, t *Task, height uint64) {
+func (k *Keeper) nextReadySequence(ctx sdk.Context) uint64 {
 	s := k.store(ctx)
-	if t.QueueKey != nil {
-		s.Delete(t.QueueKey)
-	}
 	n := number(s, "ready_sequence")
 	if n == math.MaxUint64 {
 		panic("ready sequence exhausted")
 	}
 	n++
 	setNumber(s, "ready_sequence", n)
+	return n
+}
+func (k *Keeper) enqueue(ctx sdk.Context, t *Task, height uint64) {
+	k.enqueueWithSequence(ctx, t, height, k.nextReadySequence(ctx))
+}
+func (k *Keeper) enqueueWithSequence(ctx sdk.Context, t *Task, height, sequence uint64) {
+	s := k.store(ctx)
+	if t.QueueKey != nil {
+		s.Delete(t.QueueKey)
+	}
+	// Scheduler-phase wakeups enter due; their producer chooses the eligible
+	// height. Timers retain their deadline, callbacks and yields use h+1.
 	t.ReadyAt = height
-	t.QueueKey = indexKey("ready/"+t.Owner, height, n, "")
+	t.ReadySequence = sequence
+	if height > uint64(ctx.BlockHeight()) || ctx.Value(schedulerKey{}) == true {
+		t.QueueKey = dueKey(height, sequence)
+	} else {
+		t.QueueKey = bidKey(t.MaxGasPrice, height, sequence)
+	}
 	s.Set(t.QueueKey, taskKey(t.Owner, t.ID))
-	k.ensureContract(ctx, t.Owner)
-}
-func (k *Keeper) ensureContract(ctx sdk.Context, owner string) {
-	s := k.store(ctx)
-	meta := []byte("contract-queue/" + owner)
-	if s.Has(meta) {
-		return
-	}
-	n := number(s, "contract_sequence")
-	if n == math.MaxUint64 {
-		panic("contract queue exhausted")
-	}
-	n++
-	setNumber(s, "contract_sequence", n)
-	key := []byte(fmt.Sprintf("contracts/%020d/%s", n, owner))
-	s.Set(key, []byte(owner))
-	s.Set(meta, key)
-}
-func (k *Keeper) rotateContract(ctx sdk.Context, key []byte, owner string) {
-	s := k.store(ctx)
-	s.Delete(key)
-	s.Delete([]byte("contract-queue/" + owner))
-	p := []byte("ready/" + owner + "/")
-	it := s.Iterator(p, storetypes.PrefixEndBytes(p))
-	exists := it.Valid()
-	it.Close()
-	if exists {
-		k.ensureContract(ctx, owner)
-	}
-}
-func (k *Keeper) cleanContract(ctx sdk.Context, owner string) {
-	s := k.store(ctx)
-	meta := []byte("contract-queue/" + owner)
-	key := s.Get(meta)
-	if key == nil {
-		return
-	}
-	p := []byte("ready/" + owner + "/")
-	it := s.Iterator(p, storetypes.PrefixEndBytes(p))
-	exists := it.Valid()
-	it.Close()
-	if !exists {
-		s.Delete(key)
-		s.Delete(meta)
-	}
 }
 func (k *Keeper) clearWait(ctx sdk.Context, t *Task) {
 	s := k.store(ctx)
@@ -211,7 +191,6 @@ func (k *Keeper) finishTo(ctx sdk.Context, t *Task, status, recipient string) er
 	if t.QueueKey != nil {
 		s.Delete(t.QueueKey)
 	}
-	k.cleanContract(ctx, t.Owner)
 	k.clearWait(ctx, t)
 	s.Delete(t.ExpiryKey)
 	t.QueueKey = nil
@@ -362,6 +341,12 @@ func (k *Keeper) Deliver(ctx sdk.Context, owner string, id, sequence uint64, res
 	t.Inbox = &r
 	if e := k.checkQuota(t); e != nil {
 		return e
+	}
+	// An authenticated result replaces its timeout slot. Preserve the wait
+	// metadata for the resume request, but never fire the obsolete timer later.
+	if t.TimerKey != nil {
+		k.store(ctx).Delete(t.TimerKey)
+		t.TimerKey = nil
 	}
 	if t.Status != "paused" {
 		t.Status = "runnable"

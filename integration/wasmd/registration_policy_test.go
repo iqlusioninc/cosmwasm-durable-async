@@ -150,7 +150,7 @@ func TestLastActiveTaskRemovesOwnerCountAndPruningKeepsIDs(t *testing.T) {
 	}
 	require.False(t, k.maintenanceOne(ctx, "prune"))
 	for key := range policySnapshot(ctx, k) {
-		for _, prefix := range []string{"active/", "task/", "prune/", "expiry/", "ready/", "contracts/", "contract-queue/"} {
+		for _, prefix := range []string{"active/", "task/", "prune/", "expiry/", "due/", "bid/", "ready/", "contracts/", "contract-queue/"} {
 			require.False(t, strings.HasPrefix(key, prefix), "leftover index %s", key)
 		}
 	}

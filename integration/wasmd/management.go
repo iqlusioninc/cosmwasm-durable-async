@@ -1,6 +1,7 @@
 package async
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 
@@ -120,6 +121,12 @@ func (k *Keeper) UpdateBudget(ctx sdk.Context, owner string, r UpdateBudgetMsg) 
 	task.GasPerPoll = r.GasPerPoll
 	task.MaxGasPrice = r.MaxGasPrice
 	task.Refund = refund.String()
+	if bytes.HasPrefix(task.QueueKey, []byte("bid/")) {
+		store := k.store(cached)
+		store.Delete(task.QueueKey)
+		task.QueueKey = bidKey(task.MaxGasPrice, task.ReadyAt, task.ReadySequence)
+		store.Set(task.QueueKey, taskKey(task.Owner, task.ID))
+	}
 	if err = k.checkQuota(task); err != nil {
 		return err
 	}

@@ -27,7 +27,7 @@ func TestSharedResultSizeBoundaries(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			var w Wait
 			require.NoError(t, json.Unmarshal(marshal(map[string]any{"operation": map[string]any{"resolver": owner, "deadline": 20, "max_result_bytes": c.Max}}), &w))
-			task := Task{ID: uint64(i + 1), Owner: owner, Register: Register{ExpiresAt: 100, AllocatedBytes: 8192}, Wait: &w, Sequence: 1, Status: "waiting"}
+			task := Task{ID: uint64(i + 1), Owner: owner, Register: Register{MaxGasPrice: "1", ExpiresAt: 100, AllocatedBytes: 8192}, Wait: &w, Sequence: 1, Status: "waiting"}
 			k.save(ctx, task)
 			err := k.Deliver(ctx, owner, task.ID, 1, owner, c.Resolution)
 			if c.Accepted {

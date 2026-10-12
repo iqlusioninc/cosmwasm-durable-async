@@ -144,7 +144,6 @@ func TestLivePriceRegistrationFundingAndResume(t *testing.T) {
 	task, err := k.load(ctx, owner.String(), id)
 	require.NoError(t, err)
 	k.store(ctx).Delete(task.QueueKey)
-	k.cleanContract(ctx, owner.String())
 	task.QueueKey = nil
 	task.Status = "paused"
 	task.Pause = "trap"
