@@ -149,8 +149,8 @@ Additional acceptance uses signed ABCI transactions, disk close/reopen and
 deterministic replay. Real callback storage panics through Sudo, nested Execute,
 Query and Reply propagate without task charges or committed child writes; an
 ordinary signed transaction proves BaseApp does not turn a typed native fault
-into a transaction error code. This is not state-sync or a multi-validator
-deployment test. Outbound reply/data aggregation and IBC-specific resolver
+into a transaction error code. Snapshot and network state-sync coverage is
+described below; this is not a multi-validator deployment test. Outbound reply/data aggregation and IBC-specific resolver
 adapters are not provided.
 
 ABI1 rejects Wasm start sections deterministically at validation and raw-Wasm
@@ -170,5 +170,64 @@ execution accounting, while the patched app uses nonzero storage rent. Final
 bank transfer/accounting writes are metered in the reserved host slice and
 covered by prepaid maintenance fees; the execution fee is settled from the
 attempt plus its first host disposition write. Lease growth, budget changes and
-refund-address management have parity tests. Privileged import validation, exhaustive failure
-and overload coverage, and production calibration remain follow-ups.
+refund-address management have parity tests. General privileged import validation,
+exhaustive failure and overload coverage, and production calibration remain follow-ups.
+
+## State sync
+
+The mounted native scheduler store travels in the SDK's authenticated IAVL
+snapshot alongside bank and contract state. A genesis-only manifest commits the
+native schema and scheduler configuration. Restore and ordinary startup reject
+missing or incompatible manifests rather than inventing them for existing data.
+This changes genesis state: pre-manifest experimental databases need an explicit
+upgrade, or a fresh experimental chain; they are not silently migrated.
+
+The Wasm snapshot extension verifies compressed payload size, code checksums,
+membership, uniqueness and completeness before activation. Raw Wasm is restored
+and compiled locally; machine-specific compiled caches are not transferred.
+The final chunk must match the offered trusted app hash, and read-only checks
+validate the scheduler's task/index/counter and escrow invariants. Omitting the
+entire Wasm extension does not bypass the final checks. Restore never polls a
+task, advances its continuation, or charges task escrow.
+
+Before accepting restoration, the app durably records
+`HOME/.native-async-restore.pending` (`HOME` here means the node's configured app
+home, not the user's shell home). It clears that marker only after successful
+verification. Partial or failed restoration blocks execution in-process and
+after a process restart. The pinned SDK cannot reset partially imported IAVL
+state for another attempt: use a fresh node data directory after failure; do
+not bypass the guard by deleting the marker and reusing rejected data.
+
+`TestSnapshot*` uses actual ABCI snapshot offer/load/apply calls and empty LevelDB
+and Wasm directories. It covers pinned/unpinned code, runnable and waiting tasks,
+paused tasks with accepted inboxes, terminal records, deadline/expiry crossings,
+duplicate callbacks, and subsequent identical roots/events/gas/balances. Negative
+cases rebuild streams with valid chunk metadata but missing, unexpected,
+duplicate or oversized code, omitted extensions, incompatible configuration or
+the wrong trusted hash. Ordinary corrupted chunks exercise refetch separately.
+Successful restoration also survives reopening the app; incomplete and rejected
+restores refuse reopening instead of forgetting the activation guard.
+
+The opt-in network test starts three independent localhost processes: one
+validator, a second snapshot-serving full node, and an empty state-sync joiner.
+CometBFT verifies the trusted height/hash and fetches the snapshot from peers.
+The test checks that the joiner did not replay from genesis, preserves task and
+funding state, completes the workflow after a callback, and agrees on subsequent
+app hashes and historical-height bank balances. Run the complete build and test
+route with this additional test enabled:
+
+```sh
+NATIVE_ASYNC_NETWORK_TEST=1 bash integration/wasmd/test.sh
+```
+
+To reuse a previously printed patched workspace instead of rebuilding the native
+library, run from `integration/wasmd` with that `GOWORK` and the documented Go
+cache/toolchain environment:
+
+```sh
+NATIVE_ASYNC_NETWORK_TEST=1 go test -tags upstream -count=1 -timeout 5m -run 'TestSnapshot|TestStateSyncNetwork' ./...
+```
+
+These are local pinned-version acceptance tests, not proof of multi-validator
+consensus under faults, Byzantine-peer resilience, cross-platform determinism,
+general genesis export/import, or production resource calibration.
