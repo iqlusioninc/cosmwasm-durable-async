@@ -6,7 +6,7 @@ use crate::{
     *,
 };
 use cosmwasm_std::{
-    Addr, Api, Binary, Coin, CosmosMsg, Decimal, StdError, StdResult, Storage, Uint128,
+    Addr, Api, Binary, Coin, CosmosMsg, Decimal, Order, StdError, StdResult, Storage, Uint128,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +97,8 @@ pub struct ExecutionTask {
     pub charged: Uint128,
     pub reserved: Uint128,
     pub last_attempt: Option<u64>,
+    #[serde(default)]
+    pub ready_at: u64,
     pub output: Option<Binary>,
     pub error: Option<String>,
     pub expires_at: u64,
@@ -147,19 +149,14 @@ fn task_key(c: &str, id: u64) -> Vec<u8> {
 fn count_key(c: &str) -> Vec<u8> {
     [b"na2/count/".as_slice(), c.as_bytes()].concat()
 }
-fn ready_prefix(c: &str) -> Vec<u8> {
-    [b"na2/ready/".as_slice(), c.as_bytes(), b"/"].concat()
-}
-fn member_key(c: &str) -> Vec<u8> {
-    [b"na2/member/".as_slice(), c.as_bytes()].concat()
-}
-fn remove_empty_ring(s: &mut dyn Storage, c: &str) {
-    if first(s, &ready_prefix(c)).is_none() {
-        if let Some(key) = s.get(&member_key(c)) {
-            s.remove(&key);
-            s.remove(&member_key(c));
-        }
-    }
+fn bid_key(bid: Decimal, h: u64, seq: u64) -> Vec<u8> {
+    [
+        b"na2/bid/".as_slice(),
+        bid_component(bid).as_bytes(),
+        &h.to_be_bytes(),
+        &seq.to_be_bytes(),
+    ]
+    .concat()
 }
 fn save(s: &mut dyn Storage, t: &ExecutionTask) -> StdResult<()> {
     put(s, &task_key(&t.contract, t.task_id), t)
@@ -199,19 +196,19 @@ fn schedule(s: &mut dyn Storage, t: &mut ExecutionTask, h: u64) -> StdResult<()>
     t.queue_key = Some(timed(s, b"na2/due/", h, t)?.into());
     Ok(())
 }
-fn ring(s: &mut dyn Storage, c: &str) -> StdResult<()> {
-    if s.get(&member_key(c)).is_none() {
-        let seq = bump(s, b"na2/ring-sequence")?;
-        let k = [b"na2/ring/".as_slice(), &seq.to_be_bytes()].concat();
-        put(s, &k, &c)?;
-        s.set(&member_key(c), &k);
-    }
-    Ok(())
-}
-fn ready(s: &mut dyn Storage, t: &mut ExecutionTask) -> StdResult<()> {
-    unqueue(s, t);
+fn ready(s: &mut dyn Storage, t: &mut ExecutionTask, bid: Decimal, h: u64) -> StdResult<()> {
     let seq = bump(s, b"na2/sequence")?;
-    let k = [ready_prefix(&t.contract), seq.to_be_bytes().to_vec()].concat();
+    ready_with_sequence(s, t, bid, h, seq)
+}
+fn ready_with_sequence(
+    s: &mut dyn Storage,
+    t: &mut ExecutionTask,
+    bid: Decimal,
+    h: u64,
+    seq: u64,
+) -> StdResult<()> {
+    unqueue(s, t);
+    let k = bid_key(bid, h, seq);
     put(
         s,
         &k,
@@ -222,7 +219,8 @@ fn ready(s: &mut dyn Storage, t: &mut ExecutionTask) -> StdResult<()> {
     )?;
     t.queue_key = Some(k.into());
     t.status = ExecutionStatus::Runnable;
-    ring(s, &t.contract)
+    t.ready_at = h;
+    Ok(())
 }
 fn due(s: &dyn Storage, prefix: &[u8], h: u64) -> Option<(Vec<u8>, Vec<u8>)> {
     first(s, prefix).filter(|(k, _)| {
@@ -281,6 +279,7 @@ impl Runtime {
         let mut reserved = t.clone();
         reserved.wait_sequence = u64::MAX;
         reserved.last_attempt = Some(u64::MAX);
+        reserved.ready_at = u64::MAX;
         reserved.charged = Uint128::MAX;
         reserved.reserved = Uint128::MAX;
         reserved.storage_fee = Uint128::MAX;
@@ -288,8 +287,7 @@ impl Runtime {
         reserved.expires_at = u64::MAX;
         reserved.retain_until = u64::MAX;
         reserved.status = ExecutionStatus::Completed; // longest execution status
-        reserved.queue_key =
-            Some(vec![0; (ready_prefix(&t.contract).len() + 8).max(b"na2/due/".len() + 16)].into());
+        reserved.queue_key = Some(vec![0; b"na2/bid/".len() + 32 + 16].into());
         if inbox_reserve != 0 {
             reserved.inbox = None;
         }
@@ -527,6 +525,22 @@ impl Runtime {
                 f.max_gas_price = max_gas_price;
                 f.max_attempt_charge = self.keeper.attempt_charge_at(gas_per_poll, base_price)?;
                 f.refund = refund.to_string();
+                if let Some(key) = t
+                    .queue_key
+                    .as_ref()
+                    .filter(|key| key.as_slice().starts_with(b"na2/bid/"))
+                {
+                    // Budget changes retain both readiness age and the original
+                    // sequence, including when joining an existing bid tier.
+                    let seq = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
+                    let value = cache
+                        .get(key.as_slice())
+                        .ok_or_else(|| err("missing bid entry"))?;
+                    let new_key = bid_key(max_gas_price, t.ready_at, seq);
+                    cache.remove(key.as_slice());
+                    cache.set(&new_key, &value);
+                    t.queue_key = Some(new_key.into());
+                }
             }
             _ => unreachable!(),
         }
@@ -647,6 +661,7 @@ impl Runtime {
             charged: Uint128::zero(),
             reserved: Uint128::zero(),
             last_attempt: None,
+            ready_at: 0,
             output: None,
             error: None,
             expires_at: expiry,
@@ -748,7 +763,8 @@ impl Runtime {
                 t.status = ExecutionStatus::Runnable;
                 schedule(s, &mut t, next(h)?)?;
             } else {
-                ready(s, &mut t)?;
+                let funding = host::load(s, c, id)?;
+                ready(s, &mut t, funding.max_gas_price, h)?;
             }
             // Keep the public status in step with the Go adapter's delivery.
             let mut funding = host::load(s, c, id)?;
@@ -880,7 +896,6 @@ impl Runtime {
             return Err(err("already terminal"));
         }
         unqueue(s, t);
-        remove_empty_ring(s, &t.contract);
         s.remove(t.expiry_key.as_slice());
         t.status = status;
         t.wait = None;
@@ -1065,30 +1080,43 @@ impl Runtime {
             };
             let r: Reference = cosmwasm_std::from_json(value)?;
             let mut t = load(s, &r.contract, r.id)?;
+            let ready_at = u64::from_be_bytes(
+                key[b"na2/due/".len()..b"na2/due/".len() + 8]
+                    .try_into()
+                    .unwrap(),
+            );
+            let seq = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
             s.remove(&key);
-            t.queue_key = None;
             if !terminal(&t) && t.status != ExecutionStatus::Paused && h < t.expires_at {
-                ready(s, &mut t)?;
+                let f = host::load(s, &Addr::unchecked(&r.contract), r.id)?;
+                // Promotion preserves the original queue position even when
+                // newer deliveries already entered the same readiness height.
+                ready_with_sequence(s, &mut t, f.max_gas_price, ready_at, seq)?;
+            } else {
+                t.queue_key = None;
             }
             save(s, &t)?;
             report.promotions += 1;
         }
+        // A single lexical cursor and visit counter cover the entire block.
+        // Oversized entries remain persisted but cannot be revisited this block.
+        let mut cursor = b"na2/bid/".to_vec();
         while report.visits < self.config.max_visits {
             if !self.maintenance(&mut report) {
                 break;
             }
-            let Some((ring_key, value)) = first(s, b"na2/ring/") else {
+            let Some((ready_key, value)) = s
+                .range(Some(&cursor), Some(b"na2/bid0"), Order::Ascending)
+                .next()
+            else {
                 break;
             };
-            let c: String = cosmwasm_std::from_json(value)?;
             report.visits += 1;
-            let Some((ready_key, value)) = first(s, &ready_prefix(&c)) else {
-                s.remove(&ring_key);
-                s.remove(&member_key(&c));
-                continue;
-            };
+            cursor = ready_key.clone();
+            cursor.push(0); // exclusive lower bound; iterator is closed before writes
             let r: Reference = cosmwasm_std::from_json(value)?;
-            let mut t = load(s, &r.contract, r.id)?;
+            let c = r.contract;
+            let mut t = load(s, &c, r.id)?;
             let addr = Addr::unchecked(&c);
             let mut f = host::load(s, &addr, t.task_id)?;
             if h >= t.expires_at {
@@ -1097,13 +1125,14 @@ impl Runtime {
                 save(s, &t)?;
                 continue;
             }
-            // Keep the ring head untouched on deferral: the next fresh block
-            // reserves this contract before admitting smaller tasks.
-            if f.gas_per_poll > self.config.block_gas - report.gas_used {
+            // Descending bid order makes every subsequent task ineligible too.
+            // Leave priced-out work queued for the separate grace pause pass.
+            if f.max_gas_price < base_price {
                 break;
             }
-            s.remove(&ring_key);
-            s.remove(&member_key(&c));
+            if f.gas_per_poll > self.config.block_gas - report.gas_used {
+                continue;
+            }
             s.remove(&ready_key);
             t.queue_key = None;
             if t.last_attempt == Some(h) {
@@ -1112,9 +1141,7 @@ impl Runtime {
                 continue;
             }
             let charge = self.keeper.attempt_charge_at(f.gas_per_poll, base_price)?;
-            let blocked = if f.max_gas_price < base_price {
-                Some(PauseReason::PriceLimit)
-            } else if f.available < charge {
+            let blocked = if f.available < charge {
                 Some(PauseReason::InsufficientFunds)
             } else {
                 None
@@ -1247,9 +1274,6 @@ impl Runtime {
                 // above bounds even an over-reporting host to that cap, and
                 // reservation bounds the block sum without overflowing u64.
                 report.poll_gas_used += gas - self.config.host_gas;
-            }
-            if first(s, &ready_prefix(&c)).is_some() {
-                ring(s, &c)?;
             }
         }
         report.next_base_price = next_base_price(

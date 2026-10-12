@@ -9,6 +9,236 @@ fn management(value: serde_json::Value) -> RuntimeMsg {
     serde_json::from_value(value).expect("management ABI")
 }
 
+#[allow(clippy::too_many_arguments)]
+fn set_bid(
+    rt: &Runtime,
+    api: &MockApi,
+    s: &mut dyn Storage,
+    c: &Addr,
+    host: &mut TestHost,
+    id: u64,
+    gas: u64,
+    bid: &str,
+) {
+    rt.execute(
+        api,
+        s,
+        1,
+        c,
+        management(serde_json::json!({"update_budget": {
+            "task_id": id, "actor": c, "gas_per_poll": gas, "max_gas_price": bid, "refund": c,
+        }})),
+        false,
+        host,
+    )
+    .unwrap();
+}
+
+fn poll_log(s: &dyn Storage) -> Vec<(String, u64)> {
+    s.get(b"user/log")
+        .map(cosmwasm_std::from_json)
+        .transpose()
+        .unwrap()
+        .unwrap_or_default()
+}
+
+#[test]
+fn highest_bid_polls_first_and_equal_bids_are_fifo() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.block_gas = 40;
+    host.gas = 38;
+    for bid in ["3", "5", "5"] {
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, bid);
+    }
+    for h in 2..=4 {
+        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().polls, 1);
+    }
+    assert_eq!(
+        poll_log(&s),
+        vec![(c.to_string(), 2), (c.to_string(), 3), (c.to_string(), 1)]
+    );
+}
+
+#[test]
+fn stops_at_first_bid_below_base_price() {
+    let (rt, api, mut s, c, mut host) = setup();
+    for bid in ["3", "5", "2"] {
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, bid);
+    }
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
+    );
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(poll_log(&s), vec![(c.to_string(), 2)]);
+    assert!(report.visits <= 2);
+    assert_eq!(
+        rt.task(&s, &c, 1, 2).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    assert_eq!(
+        s.range(
+            Some(b"na2/bid/"),
+            Some(b"na2/bid0"),
+            cosmwasm_std::Order::Ascending
+        )
+        .count(),
+        2
+    );
+}
+
+#[test]
+fn bid_equal_to_base_price_is_eligible() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "4");
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
+    );
+    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+}
+
+#[test]
+fn all_priced_out_polls_nothing_and_decays() {
+    let (rt, api, mut s, c, mut host) = setup();
+    for _ in 0..3 {
+        register(&rt, &api, &mut s, &c, &mut host);
+    }
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
+    );
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.polls, 0);
+    assert_eq!(report.visits, 1);
+    assert!(report.next_base_price < report.base_price);
+    assert_eq!(
+        rt.task(&s, &c, 1, 2).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+}
+
+#[test]
+fn oversized_task_is_skipped_then_first_next_block() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.block_gas = 100;
+    host.gas = 38;
+    for (bid, gas) in [("5", 40), ("4", 80), ("3", 40)] {
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        set_bid(&rt, &api, &mut s, &c, &mut host, id, gas, bid);
+    }
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.polls, 2);
+    assert_eq!(report.visits, 3);
+    assert_eq!(poll_log(&s), vec![(c.to_string(), 1), (c.to_string(), 3)]);
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 1);
+    assert_eq!(poll_log(&s).last(), Some(&(c.to_string(), 2)));
+}
+
+#[test]
+fn selection_visit_cap_is_global_across_oversized_entries() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.block_gas = 100;
+    rt.config.max_visits = 3;
+    host.gas = 38;
+    for (bid, gas) in [("5", 40), ("4", 80), ("3", 80), ("2", 40)] {
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        set_bid(&rt, &api, &mut s, &c, &mut host, id, gas, bid);
+    }
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.visits, 3);
+    assert_eq!(report.polls, 1);
+    assert_eq!(
+        rt.task(&s, &c, 4, 2).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+}
+
+#[test]
+fn update_budget_rekeys_bid_entry_preserving_fifo() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    for bid in ["3", "5", "5"] {
+        let id = register(&rt, &api, &mut s, &c, &mut host);
+        set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, bid);
+    }
+    rt.config.max_visits = 0;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    // Raising the oldest task to an equal bid must retain its FIFO position.
+    set_bid(&rt, &api, &mut s, &c, &mut host, 1, 40, "5");
+    set_bid(&rt, &api, &mut s, &c, &mut host, 3, 40, "6");
+    rt.config.max_visits = 1;
+    for h in 3..=5 {
+        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().polls, 1);
+    }
+    assert_eq!(
+        poll_log(&s),
+        vec![(c.to_string(), 3), (c.to_string(), 1), (c.to_string(), 2)]
+    );
+}
+
+#[test]
+fn delayed_promotion_preserves_original_readiness_height() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    for _ in 0..2 {
+        register(&rt, &api, &mut s, &c, &mut host);
+    }
+    rt.config.max_promotions = 1;
+    rt.config.max_visits = 0;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&mut s, 5, &mut host).unwrap();
+    for id in 1..=2 {
+        let task = serde_json::to_value(rt.task(&s, &c, id, 5).unwrap()).unwrap();
+        assert_eq!(task["ready_at"], 2);
+    }
+    set_bid(&rt, &api, &mut s, &c, &mut host, 2, 40, "2");
+    assert_eq!(
+        serde_json::to_value(rt.task(&s, &c, 2, 5).unwrap()).unwrap()["ready_at"],
+        2
+    );
+}
+
+#[test]
+fn delayed_promotion_keeps_fifo_before_equal_height_delivery() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let waiting = register(&rt, &api, &mut s, &c, &mut host);
+    let delayed = register(&rt, &api, &mut s, &c, &mut host);
+    rt.config.max_promotions = 1;
+    rt.config.max_visits = 1;
+    host.outcome = PollOutcome::Pending {
+        state: Binary::from(b"wait".as_slice()),
+        wait: Wait::Operation {
+            resolver: "resolver".into(),
+            deadline: 10,
+            max_result_bytes: 10,
+        },
+    };
+    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    rt.deliver(
+        &mut s,
+        2,
+        &c,
+        waiting,
+        1,
+        "resolver",
+        Resolution::Success {
+            data: Binary::default(),
+        },
+        false,
+    )
+    .unwrap();
+    host.outcome = PollOutcome::Complete {
+        output: Binary::default(),
+    };
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 1);
+    assert_eq!(
+        poll_log(&s),
+        vec![(c.to_string(), waiting), (c.to_string(), delayed)]
+    );
+}
+
 #[test]
 fn base_price_rises_on_full_blocks_and_decays_to_floor() {
     let (rt, api, mut s, c, mut host) = setup();
@@ -1281,7 +1511,7 @@ fn failed_message_and_out_of_gas_revert_user_state_and_bound_fees() {
 }
 
 #[test]
-fn round_robin_contracts_fifo_tasks_and_deferred_head_survive_restart() {
+fn equal_bid_contracts_share_global_fifo_and_deferred_entries_survive_restart() {
     let (mut rt, api, mut store, c, mut host) = setup();
     rt.config.block_gas = 60;
     let other = api.addr_make("other");
@@ -1294,17 +1524,30 @@ fn round_robin_contracts_fifo_tasks_and_deferred_head_survive_restart() {
     register(&rt, &api, &mut store, &other, &mut host);
     host.gas = 28;
     assert_eq!(rt.run_block(&mut store, 2, &mut host).unwrap().polls, 1);
-    assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 1);
-    assert_eq!(rt.run_block(&mut store, 4, &mut host).unwrap().polls, 1);
+    let (mut restored, _, _, _, _) = setup();
+    restored.config.block_gas = 60;
+    assert_eq!(
+        restored.run_block(&mut store, 3, &mut host).unwrap().polls,
+        1
+    );
+    assert_eq!(
+        restored.run_block(&mut store, 4, &mut host).unwrap().polls,
+        1
+    );
     let log: Vec<(String, u64)> = cosmwasm_std::from_json(store.get(b"user/log").unwrap()).unwrap();
     assert_eq!(
         log,
         vec![
             (c.to_string(), 1),
-            (other.to_string(), 1),
-            (c.to_string(), 2)
+            (c.to_string(), 2),
+            (other.to_string(), 1)
         ]
     );
+    assert!(!store
+        .range(None, None, cosmwasm_std::Order::Ascending)
+        .any(|(k, _)| k.starts_with(b"na2/ring")
+            || k.starts_with(b"na2/member/")
+            || k.starts_with(b"na2/ready/")));
 }
 
 #[test]
@@ -1831,12 +2074,21 @@ fn runtime_records_size(s: &dyn Storage, c: &Addr, id: u64) -> usize {
     s.get(&task).unwrap().len() + s.get(&funding).unwrap().len()
 }
 #[test]
-fn cancellation_churn_removes_empty_ring_before_releasing_storage() {
+fn cancellation_churn_removes_bid_entry_before_releasing_storage() {
     let (mut rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
-    // Promote without polling, leaving a contract ring entry to clean up.
+    // Promote without polling, leaving a bid entry to clean up.
     rt.config.max_visits = 0;
     rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(
+        s.range(
+            Some(b"na2/bid/"),
+            Some(b"na2/bid0"),
+            cosmwasm_std::Order::Ascending
+        )
+        .count(),
+        1
+    );
     rt.manage(
         &api,
         &mut s,
@@ -1850,11 +2102,17 @@ fn cancellation_churn_removes_empty_ring_before_releasing_storage() {
     )
     .unwrap();
     rt.run_block(&mut s, 22, &mut host).unwrap();
-    for prefix in [b"na2/ring/".as_slice(), b"na2/member/", b"na2/ready/"] {
+    for prefix in [
+        b"na2/ring".as_slice(),
+        b"na2/member/",
+        b"na2/ready/",
+        b"na2/bid/",
+        b"na2/due/",
+    ] {
         assert!(
             !s.range(None, None, cosmwasm_std::Order::Ascending)
                 .any(|(k, _)| k.starts_with(prefix)),
-            "released task left ring storage behind"
+            "released task left queue storage behind"
         );
     }
 }
@@ -1905,6 +2163,8 @@ fn last_active_task_removes_owner_count_and_pruning_keeps_ids() {
         b"na2/ring/",
         b"na2/member/",
         b"na2/ready/",
+        b"na2/bid/",
+        b"na2/due/",
         b"native-async/v1/task/",
     ] {
         assert!(
@@ -1944,6 +2204,7 @@ fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
     task.charged = Uint128::MAX.checked_sub(Uint128::new(9)).unwrap();
     task.wait_sequence = u64::MAX;
     task.last_attempt = Some(u64::MAX);
+    task.ready_at = u64::MAX;
     funding.cumulative_execution_fees = task.charged;
     s.set(&task_key, &cosmwasm_std::to_json_vec(&task).unwrap());
     s.set(&funding_key, &cosmwasm_std::to_json_vec(&funding).unwrap());
@@ -1977,6 +2238,55 @@ fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
             );
         }
     }
+}
+
+#[test]
+fn exact_quota_preallocates_maximum_readiness_and_bid_metadata() {
+    let quota = minimum_quota();
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register_with_quota(&rt, &api, &mut s, &c, &mut host, quota).unwrap();
+    rt.config.max_visits = 0;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let mut task = rt.task(&s, &c, id, 2).unwrap();
+    let value = serde_json::to_value(&task).unwrap();
+    let queue_key: Binary = serde_json::from_value(value["queue_key"].clone()).unwrap();
+    assert_eq!(queue_key.len(), 56); // prefix + 32 hex digits + two u64s
+                                     // Check the admitted record's largest mandatory metadata encoding while
+                                     // retaining its real bid key, rather than relying on slack after unqueue.
+    task.ready_at = u64::MAX;
+    task.wait_sequence = u64::MAX;
+    task.last_attempt = Some(u64::MAX);
+    task.charged = Uint128::MAX;
+    task.reserved = Uint128::MAX;
+    task.storage_fee = Uint128::MAX;
+    task.allocated_bytes = u64::MAX;
+    task.expires_at = u64::MAX;
+    task.retain_until = u64::MAX;
+    task.status = ExecutionStatus::Completed;
+    let mut funds = funding(&rt, &api, &s, &c, id);
+    funds.available = Uint128::MAX;
+    funds.reserved = Uint128::MAX;
+    funds.cumulative_execution_fees = Uint128::MAX;
+    funds.max_attempt_charge = Uint128::MAX;
+    funds.storage_lease_paid = Uint128::MAX;
+    funds.allocated_bytes = u64::MAX;
+    funds.expires_at = u64::MAX;
+    funds.status = TaskStatus::Paused {
+        reason: PauseReason::InsufficientFunds,
+        resume: ResumeState::Runnable,
+    };
+    let bytes = cosmwasm_std::to_json_vec(&task).unwrap().len()
+        + cosmwasm_std::to_json_vec(&funds).unwrap().len();
+    assert!(bytes + 1024 <= quota as usize);
+    // Older records remain readable with the serde-defaulted readiness field.
+    let mut old = serde_json::to_value(task).unwrap();
+    old.as_object_mut().unwrap().remove("ready_at");
+    assert_eq!(
+        serde_json::from_value::<ExecutionTask>(old)
+            .unwrap()
+            .ready_at,
+        0
+    );
 }
 
 #[test]
