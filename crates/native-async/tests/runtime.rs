@@ -213,6 +213,195 @@ fn overreported_poll_gas_is_capped_before_price_utilization() {
 }
 
 #[test]
+fn zero_floor_runtime_registers_and_charges_zero() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.keeper.config.gas_price = Decimal::zero();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.polls, 1);
+    assert_eq!(report.base_price, Decimal::zero());
+    assert_eq!(report.next_base_price, Decimal::zero());
+    assert_eq!(report.poll_gas_used, 7);
+    assert_eq!(rt.task(&s, &c, id, 2).unwrap().charged, Uint128::zero());
+}
+
+#[test]
+fn zero_floor_runtime_queries_live_funding() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    rt.keeper.config.gas_price = Decimal::zero();
+    let config: FundingConfig = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            1,
+            RuntimeQuery::Funding(SchedulerQuery::FundingConfig {}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config.gas_price, Decimal::zero());
+    assert_eq!(config.min_base_price, Decimal::zero());
+    let task: TaskFunding = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            1,
+            RuntimeQuery::Funding(SchedulerQuery::TaskFunding {
+                contract: c.to_string(),
+                task_id: id,
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(task.max_attempt_charge, Uint128::zero());
+    let task: TaskResponse = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            1,
+            RuntimeQuery::Task {
+                contract: c.to_string(),
+                task_id: id,
+            },
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(task.status, TaskStatus::Runnable);
+}
+
+#[test]
+fn zero_floor_runtime_funds_task() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    rt.keeper.config.gas_price = Decimal::zero();
+    rt.manage(
+        &api,
+        &mut s,
+        1,
+        &c,
+        SchedulerMsg::FundTask {
+            task_id: id,
+            contributor: c.to_string(),
+            funds: Coin::new(7u128, "ugas"),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(bank(&s, &rt.keeper.escrow), Uint128::new(1006));
+}
+
+#[test]
+fn zero_floor_runtime_resumes_task() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.gas = 45;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.keeper.config.gas_price = Decimal::zero();
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::zero()).unwrap(),
+    );
+    rt.manage(
+        &api,
+        &mut s,
+        3,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 3).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+}
+
+#[test]
+fn zero_floor_runtime_cancels_task() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    rt.keeper.config.gas_price = Decimal::zero();
+    rt.manage(
+        &api,
+        &mut s,
+        1,
+        &c,
+        SchedulerMsg::CancelTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 1).unwrap().status,
+        ExecutionStatus::Cancelled
+    );
+    assert_eq!(bank(&s, &rt.keeper.escrow), Uint128::zero());
+}
+
+#[test]
+fn registration_requires_lease_cleanup_and_one_live_price_poll_atomically() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.lease_price_per_byte_block = Uint128::one();
+    s.set(
+        format!("bank/{c}").as_bytes(),
+        &cosmwasm_std::to_json_vec(&Uint128::new(100_000)).unwrap(),
+    );
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
+    );
+    // Rent: 4096 * (19 + 2), cleanup: 1, live-price poll: 40 * 2.
+    for amount in [86057u128, 86096, 86097] {
+        let before = snapshot(&s);
+        let result = rt.register(
+            &api,
+            &mut s,
+            1,
+            &c,
+            SchedulerMsg::RegisterTask {
+                control: c.to_string(),
+                refund: c.to_string(),
+                gas_per_poll: 40,
+                max_gas_price: Decimal::one(),
+                expires_at: 20,
+                funds: Coin::new(amount, "ugas"),
+            },
+            TaskProgram {
+                kind: "test".into(),
+                version: 1,
+                input: Binary::default(),
+            },
+            4096,
+            &mut host,
+        );
+        if amount < 86097 {
+            assert!(result.is_err(), "accepted underfunded amount {amount}");
+            assert_eq!(
+                snapshot(&s),
+                before,
+                "bank, task, counters, and indexes must roll back"
+            );
+        } else {
+            assert_eq!(result.unwrap(), 1);
+            assert_eq!(
+                rt.task(&s, &c, 1, 1).unwrap().status,
+                ExecutionStatus::Runnable
+            );
+            assert_eq!(bank(&s, &rt.keeper.escrow), Uint128::new(80));
+            assert_eq!(bank(&s, &rt.config.fee_collector), Uint128::new(86017));
+        }
+    }
+}
+
+#[test]
 fn public_task_query_projects_lifecycle_without_internal_fields() {
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
@@ -606,16 +795,19 @@ fn budget_noop_is_accepted_price_limit_blocks_resume_and_cancel_uses_new_refund(
 #[test]
 fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
     let (mut rt, api, mut s, c, mut host) = setup();
-    rt.config.cleanup_fee = Uint128::new(970);
+    rt.config.cleanup_fee = Uint128::new(960);
     let id = register(&rt, &api, &mut s, &c, &mut host);
     let msg = management(serde_json::json!({"update_budget":{
         "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"1","refund":c,
     }}));
     rt.execute(&api, &mut s, 3, &c, msg, false, &mut host)
         .unwrap();
+    // Admission funded the original cap exactly; increasing the cap can
+    // still cause an insufficient-funds pause when the scheduler visits it.
+    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
     let before = funding(&rt, &api, &s, &c, id);
-    assert_eq!(before.available, Uint128::new(30));
-    assert_eq!(before.storage_lease_paid, Uint128::new(970));
+    assert_eq!(before.available, Uint128::new(40));
+    assert_eq!(before.storage_lease_paid, Uint128::new(960));
     assert_eq!(before.cumulative_execution_fees, Uint128::zero());
     assert!(rt
         .manage(
@@ -638,7 +830,7 @@ fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
         SchedulerMsg::FundTask {
             task_id: id,
             contributor: api.addr_make("sponsor").to_string(),
-            funds: Coin::new(30u128, "ugas"),
+            funds: Coin::new(20u128, "ugas"),
         },
         &mut host,
     )

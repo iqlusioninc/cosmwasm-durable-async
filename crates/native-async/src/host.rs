@@ -30,9 +30,38 @@ impl Keeper {
         height: u64,
         contract: &Addr,
         msg: SchedulerMsg,
+        transfer: impl FnMut(&mut dyn Storage, &Addr, &Addr, &Coin) -> StdResult<()>,
+    ) -> StdResult<HostResponse> {
+        self.validate_config(false)?;
+        self.execute_validated(api, storage, height, contract, msg, transfer)
+    }
+
+    /// Runtime pricing permits zero; the legacy public keeper requires a
+    /// positive fixed price. All other funding validation remains shared.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_runtime(
+        &self,
+        api: &dyn Api,
+        storage: &mut dyn Storage,
+        height: u64,
+        contract: &Addr,
+        msg: SchedulerMsg,
+        transfer: impl FnMut(&mut dyn Storage, &Addr, &Addr, &Coin) -> StdResult<()>,
+    ) -> StdResult<HostResponse> {
+        self.validate_config(true)?;
+        self.execute_validated(api, storage, height, contract, msg, transfer)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_validated(
+        &self,
+        api: &dyn Api,
+        storage: &mut dyn Storage,
+        height: u64,
+        contract: &Addr,
+        msg: SchedulerMsg,
         mut transfer: impl FnMut(&mut dyn Storage, &Addr, &Addr, &Coin) -> StdResult<()>,
     ) -> StdResult<HostResponse> {
-        self.validate_config()?;
         if contract == self.escrow {
             return Err(error("escrow cannot own tasks"));
         }
@@ -196,7 +225,28 @@ impl Keeper {
         height: u64,
         msg: SchedulerQuery,
     ) -> StdResult<Binary> {
-        self.validate_config()?;
+        self.validate_config(false)?;
+        self.query_validated(api, storage, height, msg)
+    }
+
+    pub(crate) fn query_runtime(
+        &self,
+        api: &dyn Api,
+        storage: &dyn Storage,
+        height: u64,
+        msg: SchedulerQuery,
+    ) -> StdResult<Binary> {
+        self.validate_config(true)?;
+        self.query_validated(api, storage, height, msg)
+    }
+
+    fn query_validated(
+        &self,
+        api: &dyn Api,
+        storage: &dyn Storage,
+        height: u64,
+        msg: SchedulerQuery,
+    ) -> StdResult<Binary> {
         match msg {
             SchedulerQuery::FundingConfig {} => to_json_binary(&self.config),
             SchedulerQuery::TaskFunding { contract, task_id } => {
@@ -240,9 +290,9 @@ impl Keeper {
         save(storage, contract, &task)
     }
 
-    fn validate_config(&self) -> StdResult<()> {
+    fn validate_config(&self, allow_zero_price: bool) -> StdResult<()> {
         if self.config.denom.is_empty()
-            || self.config.gas_price.is_zero()
+            || (!allow_zero_price && self.config.gas_price.is_zero())
             || self.config.max_gas_per_poll == 0
             || self.config.max_lifetime_blocks == 0
         {

@@ -393,15 +393,16 @@ impl Runtime {
         msg: RuntimeQuery,
     ) -> StdResult<Binary> {
         match msg {
-            RuntimeQuery::Funding(msg) => self.live_keeper(s)?.query(api, s, h, msg),
+            RuntimeQuery::Funding(msg) => self.live_keeper(s)?.query_runtime(api, s, h, msg),
             RuntimeQuery::Task { contract, task_id } => {
                 let task = self.task(s, &api.addr_validate(&contract)?, task_id, h)?;
-                let funding: TaskFunding = cosmwasm_std::from_json(self.live_keeper(s)?.query(
-                    api,
-                    s,
-                    h,
-                    SchedulerQuery::TaskFunding { contract, task_id },
-                )?)?;
+                let funding: TaskFunding =
+                    cosmwasm_std::from_json(self.live_keeper(s)?.query_runtime(
+                        api,
+                        s,
+                        h,
+                        SchedulerQuery::TaskFunding { contract, task_id },
+                    )?)?;
                 cosmwasm_std::to_json_binary(&TaskResponse {
                     contract: task.contract,
                     task_id: task.task_id,
@@ -551,6 +552,7 @@ impl Runtime {
         let SchedulerMsg::RegisterTask {
             expires_at,
             gas_per_poll,
+            funds: deposit,
             ..
         } = &funding
         else {
@@ -594,24 +596,29 @@ impl Runtime {
                     .ok_or_else(|| err("lease overflow"))?,
             ))?
             .checked_add(self.config.cleanup_fee)?;
+        let attempt_charge = self.keeper.attempt_charge_at(*gas_per_poll, base_price)?;
+        if deposit.amount < storage_fee.checked_add(attempt_charge)? {
+            return Err(err("insufficient initial task funding"));
+        }
         let code_checksum = host.code_checksum(contract.as_str())?;
         if code_checksum.is_empty() {
             return Err(err("missing code identity"));
         }
         let mut cache = Cache::new(storage);
-        let response =
-            self.keeper
-                .execute(api, &mut cache, height, contract, funding, |s, f, t, c| {
-                    host.transfer(s, f, t, c)
-                })?;
+        let response = self.keeper.execute_runtime(
+            api,
+            &mut cache,
+            height,
+            contract,
+            funding,
+            |s, f, t, c| host.transfer(s, f, t, c),
+        )?;
         let id = cosmwasm_std::from_json(response.data.ok_or_else(|| err("missing task ID"))?)?;
         let mut funds = host::load(&cache, contract, id)?;
         funds.available = funds.available.checked_sub(storage_fee)?;
         funds.allocated_bytes = allocated_bytes;
         funds.storage_lease_paid = storage_fee;
-        funds.max_attempt_charge = self
-            .keeper
-            .attempt_charge_at(funds.gas_per_poll, base_price)?;
+        funds.max_attempt_charge = attempt_charge;
         if !storage_fee.is_zero() {
             host.transfer(
                 &mut cache,
@@ -619,12 +626,6 @@ impl Runtime {
                 &self.config.fee_collector,
                 &Coin::new(storage_fee.u128(), &self.keeper.config.denom),
             )?;
-        }
-        if funds.available < funds.max_attempt_charge && funds.status == TaskStatus::Runnable {
-            funds.status = TaskStatus::Paused {
-                reason: PauseReason::InsufficientFunds,
-                resume: ResumeState::Runnable,
-            };
         }
         host::save(&mut cache, contract, &funds)?;
         let mut task = ExecutionTask {
@@ -779,7 +780,7 @@ impl Runtime {
         if !t.reserved.is_zero() && (resume || cancel) {
             return Err(err("cannot manage an in-flight poll"));
         }
-        let response = keeper.execute(api, &mut cache, h, c, msg, |s, f, t, c| {
+        let response = keeper.execute_runtime(api, &mut cache, h, c, msg, |s, f, t, c| {
             host.transfer(s, f, t, c)
         })?;
         if cancel {
