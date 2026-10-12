@@ -12,6 +12,15 @@ import (
 
 type schedulerKey struct{}
 type pollingKey struct{}
+type selectionScanKey struct{}
+
+// One cursor and inspection budget span every selection call in EndBlock.
+// Retained oversized/skipped bids must not be read repeatedly in this block.
+type selectionScan struct {
+	cursor  []byte
+	visits  uint64
+	stopped bool
+}
 
 // ReserveOrdinaryGas is a keeper-harness helper. Production applications MUST
 // install ProposalHandlers; BaseApp resets its block meter after BeginBlock.
@@ -40,21 +49,35 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 		block = storetypes.NewGasMeter(total)
 		block.ConsumeGas(ordinary, "ordinary transaction partition")
 	}
-	meter := storetypes.NewGasMeter(k.Config.MaintenanceGas)
-	ctx = ctx.WithBlockGasMeter(block).WithGasMeter(meter).WithValue(schedulerKey{}, true)
-	for _, kind := range []string{"expiry", "prune", "timer"} {
+	finalization := storetypes.NewGasMeter(PriceFinalizationGas)
+	price := k.basePrice(ctx.WithGasMeter(finalization))
+	used := uint64(0)
+	meter := storetypes.NewGasMeter(k.Config.MaintenanceGas - PriceFinalizationGas)
+	ctx = ctx.WithBlockGasMeter(block).WithGasMeter(meter).WithValue(schedulerKey{}, true).
+		WithValue(blockPriceKey{}, price).WithValue(pollGasKey{}, &used).
+		WithValue(selectionScanKey{}, &selectionScan{})
+	// A host timer is eligible at its requested height, unlike a callback from
+	// a poll (h+1). Resolve timers before promoting the due horizon.
+	for _, kind := range []string{"expiry", "prune", "timer", "due"} {
 		for n := uint64(0); n < k.Config.MaxMaintenance; n++ {
 			more := false
-			if !cachedMaintenance(ctx, func(c sdk.Context) { more = k.maintenanceOne(c, kind) }) || !more {
+			if !cachedMaintenance(ctx, func(c sdk.Context) {
+				if kind == "due" {
+					more = k.promoteDue(c)
+				} else {
+					more = k.maintenanceOne(c, kind)
+				}
+			}) || !more {
 				break
 			}
 		}
 	}
+	k.pricePauses(ctx)
 	remaining := k.Config.AsyncGas - k.Config.MaintenanceGas
-	for visits := uint64(0); visits < k.Config.MaxVisits; visits++ {
+	for {
 		var selected *Task
 		stop := false
-		if !cachedMaintenance(ctx, func(c sdk.Context) { selected, stop = k.selectReady(c, remaining) }) || stop {
+		if !cachedMaintenance(ctx, func(c sdk.Context) { selected, stop = k.selectReady(c, remaining, nil) }) || stop {
 			break
 		}
 		if selected == nil {
@@ -65,7 +88,16 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 		block.ConsumeGas(consumed, "native async attempt")
 	}
 	block.ConsumeGas(meter.GasConsumedToLimit(), "native async maintenance")
-	return ctx.WithValue(schedulerKey{}, false).WithGasMeter(originalMeter)
+	// Mandatory finalization has a bounded, separately reserved meter, even if a
+	// discretionary visit exhausted its allowance. No state write is unmetered.
+	final := ctx.WithGasMeter(finalization)
+	target := (k.Config.AsyncGas - k.Config.MaintenanceGas) / 2
+	next := nextBasePrice(price, used, target, k.Config.MinBasePrice, k.Config.PriceAdjustDenominator)
+	k.store(final).Set([]byte("base_price"), []byte(next.String()))
+	setNumber(k.store(final), "last_poll_gas", used)
+	final.EventManager().EmitEvent(sdk.NewEvent("async_base_price", sdk.NewAttribute("old", price.String()), sdk.NewAttribute("new", next.String()), sdk.NewAttribute("used", fmt.Sprint(used)), sdk.NewAttribute("target", fmt.Sprint(target))))
+	block.ConsumeGas(finalization.GasConsumedToLimit(), "native async price finalization")
+	return ctx.WithValue(schedulerKey{}, false).WithValue(blockPriceKey{}, sdkmath.LegacyDec{}).WithValue(pollGasKey{}, (*uint64)(nil)).WithValue(selectionScanKey{}, (*selectionScan)(nil)).WithGasMeter(originalMeter)
 }
 
 // Every bounded maintenance visit is independently atomic. Exhaustion discards
@@ -88,68 +120,180 @@ func cachedMaintenance(ctx sdk.Context, f func(sdk.Context)) (ok bool) {
 	commit()
 	return true
 }
-func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64) (*Task, bool) {
-	p := []byte("contracts/")
-	it := k.store(ctx).Iterator(p, storetypes.PrefixEndBytes(p))
-	if !it.Valid() {
-		it.Close()
-		return nil, true
+
+// Price is one additional maintenance kind: like expiry/timer/due it has its
+// own MaxMaintenance inspection cap, and shares their discretionary gas meter.
+// A one-key reverse cursor bounds reads as well as writes, so a later costly
+// entry cannot roll back earlier pauses. Young entries also consume the cap.
+func (k *Keeper) pricePauses(ctx sdk.Context) {
+	prefix := []byte("bid/")
+	end := storetypes.PrefixEndBytes(prefix)
+	boundary := []byte("bid/" + bidComponent(k.basePrice(ctx)))
+	height := uint64(ctx.BlockHeight())
+	for n := uint64(0); n < k.Config.MaxMaintenance; n++ {
+		stop := false
+		if !cachedMaintenance(ctx, func(c sdk.Context) {
+			s := k.store(c)
+			key, value := func() ([]byte, []byte) {
+				it := s.ReverseIterator(prefix, end)
+				defer it.Close() // Close even when a metered read panics.
+				if !it.Valid() {
+					return nil, nil
+				}
+				return bytes.Clone(it.Key()), bytes.Clone(it.Value())
+			}() // Iterator is closed before any mutation.
+			if key == nil {
+				stop = true
+				return
+			}
+			end = key // ReverseIterator's upper bound is exclusive.
+			// Inverted bids sort lowest last; eligibility ends the reverse walk.
+			if len(key) < len(boundary) || bytes.Compare(key[:len(boundary)], boundary) <= 0 {
+				stop = true
+				return
+			}
+			b := s.Get(value)
+			if b == nil {
+				s.Delete(key)
+				return
+			}
+			var t Task
+			if err := json.Unmarshal(b, &t); err != nil {
+				panic(err)
+			}
+			if !bytes.Equal(t.QueueKey, key) || !bytes.Equal(value, taskKey(t.Owner, t.ID)) {
+				s.Delete(key)
+				return
+			}
+			// Expiry may have a backlog; never replace its outcome with a pause.
+			if terminal(t) || t.Status != "runnable" || height >= t.ExpiresAt {
+				return
+			}
+			since := max(t.ReadyAt, t.LastPoll)
+			if height < since || height-since < k.Config.PriceGraceBlocks {
+				return
+			}
+			s.Delete(key)
+			t.QueueKey = nil
+			t.Status, t.Pause = "paused", "price_limit"
+			k.save(c, t)
+		}) || stop {
+			break
+		}
 	}
-	ck := bytes.Clone(it.Key())
-	owner := string(it.Value())
-	it.Close()
-	key, value := k.first(ctx, "ready/"+owner, uint64(ctx.BlockHeight()))
+}
+
+func (k *Keeper) promoteDue(ctx sdk.Context) bool {
+	key, value := k.first(ctx, "due", uint64(ctx.BlockHeight()))
 	if key == nil {
-		k.rotateContract(ctx, ck, owner)
-		return nil, false
+		return false
 	}
-	b := k.store(ctx).Get(value)
+	s := k.store(ctx)
+	s.Delete(key)
+	b := s.Get(value)
 	if b == nil {
-		k.store(ctx).Delete(key)
-		k.rotateContract(ctx, ck, owner)
-		return nil, false
+		return true
 	}
 	var t Task
 	if e := json.Unmarshal(b, &t); e != nil {
 		panic(e)
 	}
-	if t.GasPerPoll > remaining {
-		return nil, true
+	// An old index entry cannot replace a newer readiness generation.
+	if !bytes.Equal(t.QueueKey, key) || !bytes.Equal(value, taskKey(t.Owner, t.ID)) {
+		return true
 	}
-	k.store(ctx).Delete(key)
-	k.rotateContract(ctx, ck, owner)
+	if t.ReadySequence == 0 || !bytes.Equal(key, dueKey(t.ReadyAt, t.ReadySequence)) {
+		panic("corrupt native async due key")
+	}
 	t.QueueKey = nil
-	if terminal(t) {
-		return nil, false
+	if !terminal(t) && t.Status == "runnable" {
+		// Keep original due height AND sequence, even after delayed promotion.
+		t.QueueKey = bidKey(t.MaxGasPrice, t.ReadyAt, t.ReadySequence)
+		s.Set(t.QueueKey, value)
 	}
-	// Persist every skip so no record points at the deleted ready key.
-	if t.Status != "runnable" {
-		k.save(ctx, t)
-		return nil, false
+	k.save(ctx, t)
+	return true
+}
+
+func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64, skipped [][]byte) (*Task, bool) {
+	scan, _ := ctx.Value(selectionScanKey{}).(*selectionScan)
+	if scan == nil {
+		// Direct keeper callers get one bounded walk; EndBlock always supplies
+		// the shared state above, including across independently cached visits.
+		scan = &selectionScan{}
 	}
-	if t.LastPoll == uint64(ctx.BlockHeight()) {
-		k.enqueue(ctx, &t, uint64(ctx.BlockHeight())+1)
-		k.save(ctx, t)
-		return nil, false
+	s := k.store(ctx)
+	prefix := []byte("bid/")
+	boundary := []byte("bid/" + bidComponent(k.basePrice(ctx)))
+	for !scan.stopped && scan.visits < k.Config.MaxVisits {
+		start := scan.cursor
+		if start == nil {
+			start = prefix
+		}
+		it := s.Iterator(start, storetypes.PrefixEndBytes(prefix))
+		if !it.Valid() {
+			it.Close()
+			break
+		}
+		key, value := bytes.Clone(it.Key()), bytes.Clone(it.Value())
+		it.Close() // Never mutate with an open iterator.
+		scan.visits++
+		scan.cursor = append(bytes.Clone(key), 0) // Exclusive lower bound.
+		// Inverted bids sort highest first; one below-base read ends the walk.
+		if len(key) < len(boundary) || bytes.Compare(key[:len(boundary)], boundary) > 0 {
+			break
+		}
+		isSkipped := false
+		for _, skip := range skipped {
+			if bytes.Equal(key, skip) {
+				isSkipped = true
+				break
+			}
+		}
+		if isSkipped {
+			continue
+		}
+		b := s.Get(value)
+		if b == nil {
+			s.Delete(key)
+			return nil, false
+		}
+		var t Task
+		if e := json.Unmarshal(b, &t); e != nil {
+			panic(e)
+		}
+		if !bytes.Equal(t.QueueKey, key) || !bytes.Equal(value, taskKey(t.Owner, t.ID)) {
+			s.Delete(key)
+			return nil, false
+		}
+		if t.GasPerPoll > remaining && t.Status == "runnable" && t.LastPoll != uint64(ctx.BlockHeight()) && uint64(ctx.BlockHeight()) < t.ExpiresAt {
+			continue
+		}
+		s.Delete(key)
+		t.QueueKey = nil
+		if terminal(t) || t.Status != "runnable" {
+			k.save(ctx, t)
+			return nil, false
+		}
+		if uint64(ctx.BlockHeight()) >= t.ExpiresAt {
+			k.settle(ctx, &t, "expired")
+			return nil, false
+		}
+		if t.LastPoll == uint64(ctx.BlockHeight()) {
+			k.enqueue(ctx, &t, uint64(ctx.BlockHeight())+1)
+			k.save(ctx, t)
+			return nil, false
+		}
+		if amount(t.Escrow).LT(k.fee(ctx, t.GasPerPoll)) {
+			t.Status = "paused"
+			t.Pause = "insufficient_funds"
+			k.save(ctx, t)
+			return nil, false
+		}
+		return &t, false
 	}
-	if uint64(ctx.BlockHeight()) >= t.ExpiresAt {
-		k.settle(ctx, &t, "expired")
-		return nil, false
-	}
-	price, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
-	if price.LT(k.Config.GasPrice) {
-		t.Status = "paused"
-		t.Pause = "price_limit"
-		k.save(ctx, t)
-		return nil, false
-	}
-	if amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
-		t.Status = "paused"
-		t.Pause = "insufficient_funds"
-		k.save(ctx, t)
-		return nil, false
-	}
-	return &t, false
+	scan.stopped = true
+	return nil, true
 }
 
 func (k *Keeper) first(ctx sdk.Context, kind string, height uint64) ([]byte, []byte) {
@@ -207,10 +351,12 @@ func (k *Keeper) maintenanceOne(ctx sdk.Context, kind string) bool {
 				r.Timeout = &struct{}{}
 			}
 			t.Inbox = &r
-		}
-		if t.Status != "paused" {
-			t.Status = "runnable"
-			k.enqueue(ctx, &t, uint64(ctx.BlockHeight()))
+			if t.Status != "paused" {
+				t.Status = "runnable"
+				// The wait reserved this FIFO slot when it was staged. Preserve
+				// both its due height and sequence even if timer work is delayed.
+				k.enqueueWithSequence(ctx, &t, t.ReadyAt, t.ReadySequence)
+			}
 		}
 		k.save(ctx, t)
 	}
@@ -270,7 +416,9 @@ func (k *Keeper) stage(ctx sdk.Context, t *Task, r PollResponse) error {
 		if uint64(len(t.State))+reserve+1024 > t.AllocatedBytes {
 			return fmt.Errorf("storage quota exceeded")
 		}
-		t.TimerKey = indexKey("timer", due, t.ID, t.Owner)
+		t.ReadyAt = due
+		t.ReadySequence = k.nextReadySequence(ctx)
+		t.TimerKey = indexKey("timer", due, t.ReadySequence, t.Owner)
 		k.store(ctx).Set(t.TimerKey, taskKey(t.Owner, t.ID))
 	case r.Outcome.Yield != nil:
 		t.State = r.Outcome.Yield.State
@@ -317,7 +465,7 @@ func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 			}
 		}
 	}()
-	reserve := k.fee(t.GasPerPoll)
+	reserve := k.fee(ctx, t.GasPerPoll)
 	t.Reserved = reserve.String()
 	t.Escrow = amount(t.Escrow).Sub(reserve).String()
 	k.save(ctx, *t)
@@ -350,6 +498,8 @@ func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 	return err
 }
 func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
+	price := k.basePrice(parent)
+	parent = parent.WithValue(blockPriceKey{}, price)
 	child, commit := parent.CacheContext()
 	execution := storetypes.NewGasMeter(old.GasPerPoll - k.Config.HostReserve)
 	child = child.WithGasMeter(execution).WithValue(pollingKey{}, string(taskKey(old.Owner, old.ID)))
@@ -379,7 +529,7 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	// First persist the disposition; these real SDK storage costs are charged.
 	k.save(accounting, t)
 	charged := execution.GasConsumedToLimit() + host.GasConsumedToLimit()
-	fee := k.fee(charged)
+	fee := k.feeAt(charged, price)
 	if err == nil {
 		t.Escrow = amount(t.Escrow).Add(amount(t.Reserved)).Sub(fee).String()
 	} else {
@@ -404,6 +554,9 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	} else {
 		k.save(accounting, t)
 	}
-	parent.EventManager().EmitEvent(sdk.NewEvent("async_poll", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("execution_gas", fmt.Sprint(execution.GasConsumedToLimit())), sdk.NewAttribute("charged_host_gas", fmt.Sprint(charged-execution.GasConsumedToLimit())), sdk.NewAttribute("maintenance_host_gas", fmt.Sprint(host.GasConsumedToLimit()-(charged-execution.GasConsumedToLimit()))), sdk.NewAttribute("total_gas", fmt.Sprint(execution.GasConsumedToLimit()+host.GasConsumedToLimit())), sdk.NewAttribute("fee", fee.String()), sdk.NewAttribute("pause_reason", t.Pause)))
+	if used, ok := parent.Value(pollGasKey{}).(*uint64); ok && used != nil {
+		*used += execution.GasConsumedToLimit()
+	}
+	parent.EventManager().EmitEvent(sdk.NewEvent("async_poll", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("execution_gas", fmt.Sprint(execution.GasConsumedToLimit())), sdk.NewAttribute("charged_host_gas", fmt.Sprint(charged-execution.GasConsumedToLimit())), sdk.NewAttribute("maintenance_host_gas", fmt.Sprint(host.GasConsumedToLimit()-(charged-execution.GasConsumedToLimit()))), sdk.NewAttribute("total_gas", fmt.Sprint(execution.GasConsumedToLimit()+host.GasConsumedToLimit())), sdk.NewAttribute("price", price.String()), sdk.NewAttribute("fee", fee.String()), sdk.NewAttribute("pause_reason", t.Pause)))
 	return execution.GasConsumedToLimit() + host.GasConsumedToLimit()
 }

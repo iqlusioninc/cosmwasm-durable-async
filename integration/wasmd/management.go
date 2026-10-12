@@ -1,6 +1,7 @@
 package async
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 
@@ -111,7 +112,7 @@ func (k *Keeper) UpdateBudget(ctx sdk.Context, owner string, r UpdateBudgetMsg) 
 		return err
 	}
 	// Use unbounded intermediates to reject overflow rather than panic inside SDK math.
-	scaled := new(big.Int).Mul(k.Config.GasPrice.BigInt(), new(big.Int).SetUint64(r.GasPerPoll))
+	scaled := new(big.Int).Mul(k.basePrice(cached).BigInt(), new(big.Int).SetUint64(r.GasPerPoll))
 	scale := big.NewInt(1_000_000_000_000_000_000)
 	scaled.Add(scaled, new(big.Int).Sub(new(big.Int).Set(scale), big.NewInt(1)))
 	if _, err = policyUint128(scaled.Quo(scaled, scale)); err != nil {
@@ -120,6 +121,12 @@ func (k *Keeper) UpdateBudget(ctx sdk.Context, owner string, r UpdateBudgetMsg) 
 	task.GasPerPoll = r.GasPerPoll
 	task.MaxGasPrice = r.MaxGasPrice
 	task.Refund = refund.String()
+	if bytes.HasPrefix(task.QueueKey, []byte("bid/")) {
+		store := k.store(cached)
+		store.Delete(task.QueueKey)
+		task.QueueKey = bidKey(task.MaxGasPrice, task.ReadyAt, task.ReadySequence)
+		store.Set(task.QueueKey, taskKey(task.Owner, task.ID))
+	}
 	if err = k.checkQuota(task); err != nil {
 		return err
 	}

@@ -27,7 +27,7 @@ func TestSharedResultSizeBoundaries(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			var w Wait
 			require.NoError(t, json.Unmarshal(marshal(map[string]any{"operation": map[string]any{"resolver": owner, "deadline": 20, "max_result_bytes": c.Max}}), &w))
-			task := Task{ID: uint64(i + 1), Owner: owner, Register: Register{ExpiresAt: 100, AllocatedBytes: 8192}, Wait: &w, Sequence: 1, Status: "waiting"}
+			task := Task{ID: uint64(i + 1), Owner: owner, Register: Register{MaxGasPrice: "1", ExpiresAt: 100, AllocatedBytes: 8192}, Wait: &w, Sequence: 1, Status: "waiting"}
 			k.save(ctx, task)
 			err := k.Deliver(ctx, owner, task.ID, 1, owner, c.Resolution)
 			if c.Accepted {
@@ -40,7 +40,7 @@ func TestSharedResultSizeBoundaries(t *testing.T) {
 }
 func TestModuleEndBlockMeterIsolationAndRollback(t *testing.T) {
 	ctx, k, _ := setup(t)
-	k.Config.MaintenanceGas = 1
+	k.Config.MaintenanceGas = PriceFinalizationGas + 1
 	ctx = ctx.WithConsensusParams(cmtproto.ConsensusParams{Block: &cmtproto.BlockParams{MaxGas: 400_000_000}}).WithBlockGasMeter(storetypes.NewGasMeter(400_000_000))
 	budget, e := k.Config.OrdinaryGas(400_000_000)
 	require.NoError(t, e)
@@ -52,7 +52,7 @@ func TestModuleEndBlockMeterIsolationAndRollback(t *testing.T) {
 		return sdk.EndBlock{}, nil
 	})
 	require.NoError(t, e)
-	require.Equal(t, budget+1+1234, ctx.BlockGasMeter().GasConsumed())
+	require.Greater(t, ctx.BlockGasMeter().GasConsumed(), budget+1+1234)
 	require.LessOrEqual(t, ctx.BlockGasMeter().GasConsumed(), uint64(400_000_000))
 	ctx = ctx.WithBlockGasMeter(storetypes.NewGasMeter(400_000_000))
 	k.store(ctx).Set([]byte("module-sentinel"), []byte("before"))

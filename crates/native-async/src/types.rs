@@ -61,6 +61,14 @@ impl CustomQuery for SchedulerQuery {}
 pub struct FundingConfig {
     pub denom: String,
     pub gas_price: Decimal,
+    #[serde(default)]
+    pub min_base_price: Decimal,
+    #[serde(default)]
+    pub target_gas: u64,
+    #[serde(default)]
+    pub price_grace_blocks: u64,
+    #[serde(default)]
+    pub last_block_poll_gas_used: u64,
     pub max_gas_per_poll: u64,
     pub max_lifetime_blocks: u64,
 }

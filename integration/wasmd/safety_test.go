@@ -54,24 +54,26 @@ func TestMaintenanceOutOfGasAtomic(t *testing.T) {
 	require.False(t, ok)
 	ctx = ctx.WithGasMeter(storetypes.NewInfiniteGasMeter())
 	require.Equal(t, []byte("before"), k.store(ctx).Get(key))
-	k.Config.MaintenanceGas = 1
+	k.Config.MaintenanceGas = PriceFinalizationGas + 1
 	ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
 	require.NotPanics(t, func() { ctx = k.EndBlock(ctx, 400_000_000) })
 }
-func TestPersistentContractRoundRobin(t *testing.T) {
+func TestHighestBidFirstEqualBidsFIFO(t *testing.T) {
 	ctx, k, _ := setup(t)
 	a := Task{ID: 1, Owner: "a", Status: "runnable", Escrow: "99999999", Fees: "0", Register: Register{GasPerPoll: 1, MaxGasPrice: "1", ExpiresAt: 100}}
 	b := a
 	b.ID = 2
+	b.MaxGasPrice = "5"
 	c := a
 	c.ID = 3
 	c.Owner = "b"
+	c.MaxGasPrice = "5"
 	for _, p := range []*Task{&a, &b, &c} {
 		k.enqueue(ctx, p, 10)
 		k.save(ctx, *p)
 	}
-	for _, want := range []uint64{1, 3, 2} {
-		selected, stop := k.selectReady(ctx, 90_000_000)
+	for _, want := range []uint64{2, 3, 1} {
+		selected, stop := k.selectReady(ctx, 90_000_000, nil)
 		require.False(t, stop)
 		require.NotNil(t, selected)
 		require.Equal(t, want, selected.ID)
@@ -99,14 +101,14 @@ func TestSelectReadyKeepsSkippedTasksConsistent(t *testing.T) {
 		k.save(ctx, *p)
 	}
 	for i := 0; i < 2; i++ {
-		selected, stop := k.selectReady(ctx, 90_000_000)
+		selected, stop := k.selectReady(ctx, 90_000_000, nil)
 		require.False(t, stop)
 		require.Nil(t, selected)
 	}
 	got, err := k.load(ctx, "a", 1)
 	require.NoError(t, err)
 	require.Equal(t, uint64(11), got.ReadyAt)
-	require.Equal(t, indexKey("ready/a", 11, 3, ""), got.QueueKey)
+	require.Equal(t, []byte("due/00000000000000000011/00000000000000000003"), got.QueueKey)
 	require.Equal(t, taskKey("a", 1), k.store(ctx).Get(got.QueueKey))
 	got, err = k.load(ctx, "b", 2)
 	require.NoError(t, err)

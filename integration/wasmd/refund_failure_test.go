@@ -33,7 +33,7 @@ func TestRejectedRefundDoesNotHaltScheduler(t *testing.T) {
 			setNumber(s, "bytes", 4096)
 			if path == "ready" {
 				// The ready scan can meet an expiry before maintenance does.
-				require.NotPanics(t, func() { k.selectReady(ctx, 90_000_000) })
+				require.NotPanics(t, func() { k.selectReady(ctx, 90_000_000, nil) })
 			} else {
 				ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
 				require.NotPanics(t, func() { ctx = k.EndBlock(ctx, 400_000_000) })

@@ -1,0 +1,16 @@
+{
+  "prices": [
+    {"name":"full","base":"1","used":2000,"target":1000,"floor":"0.001","denominator":8,"next":"1.125"},
+    {"name":"empty","base":"1","used":0,"target":1000,"floor":"0.001","denominator":8,"next":"0.875"},
+    {"name":"at_target","base":"1","used":1000,"target":1000,"floor":"0.001","denominator":8,"next":"1"},
+    {"name":"floor_clamp","base":"0.001","used":0,"target":1000,"floor":"0.001","denominator":8,"next":"0.001"},
+    {"name":"sub_atomic_step","base":"0.000000000000000003","used":2000,"target":1000,"floor":"0.000000000000000001","denominator":8,"next":"0.000000000000000003"},
+    {"name":"truncation","base":"1","used":1001,"target":3000,"floor":"0.001","denominator":8,"next":"0.916708333333333334"},
+    {"name":"saturate","base":"340282366920938463463.374607431768211455","used":2000,"target":1000,"floor":"0.001","denominator":8,"next":"340282366920938463463.374607431768211455"}
+  ],
+  "bid_components": [
+    {"bid":"0","key":"ffffffffffffffffffffffffffffffff"},
+    {"bid":"1","key":"fffffffffffffffff21f494c589bffff"},
+    {"bid":"340282366920938463463.374607431768211455","key":"00000000000000000000000000000000"}
+  ]
+}

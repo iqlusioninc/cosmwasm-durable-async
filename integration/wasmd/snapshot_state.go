@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strconv"
-	"strings"
 
 	sdkmath "cosmossdk.io/math"
 	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
@@ -25,7 +23,7 @@ func (k *Keeper) stateManifest() []byte {
 	return marshal(struct {
 		Schema uint32 `json:"schema"`
 		Config Config `json:"config"`
-	}{1, k.Config})
+	}{2, k.Config})
 }
 
 // InitState is genesis-only. In particular, missing old-chain metadata is not
@@ -44,6 +42,8 @@ func (k *Keeper) InitState(ctx sdk.Context) error {
 		return fmt.Errorf("cannot initialize native async manifest over existing state")
 	}
 	k.store(ctx).Set([]byte(stateManifestKey), k.stateManifest())
+	k.store(ctx).Set([]byte("base_price"), []byte(k.Config.MinBasePrice.String()))
+	setNumber(k.store(ctx), "last_poll_gas", 0)
 	return nil
 }
 
@@ -60,8 +60,20 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 		return fmt.Errorf("native async schema or configuration mismatch (or missing manifest)")
 	}
 	expected := map[string][]byte{stateManifestKey: k.stateManifest()}
+	if b := s.Get([]byte("base_price")); b != nil {
+		if _, err := storedPrice(b, k.Config.MinBasePrice); err != nil {
+			return err
+		}
+		expected["base_price"] = b
+	}
+	if b := s.Get([]byte("last_poll_gas")); b != nil {
+		if len(b) != 8 || binary.BigEndian.Uint64(b) > k.Config.AsyncGas-k.Config.MaintenanceGas {
+			return fmt.Errorf("invalid last poll gas")
+		}
+		expected["last_poll_gas"] = b
+	}
 	counters := map[string]uint64{}
-	for _, name := range []string{"next_id", "ready_sequence", "contract_sequence", "active", "bytes"} {
+	for _, name := range []string{"next_id", "ready_sequence", "active", "bytes"} {
 		b := s.Get([]byte(name))
 		if b != nil {
 			if len(b) != 8 {
@@ -72,7 +84,7 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 		}
 	}
 	owners := map[string]uint64{}
-	readyOwners := map[string]bool{}
+	sequences := map[uint64]bool{}
 	ids := map[uint64]bool{}
 	var active, allocated uint64
 	escrow := sdkmath.ZeroInt()
@@ -151,20 +163,20 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 		if (t.Status == "runnable") != (t.QueueKey != nil) {
 			return fmt.Errorf("task readiness index mismatch")
 		}
+		if t.ReadySequence == 0 || t.ReadySequence > counters["ready_sequence"] || sequences[t.ReadySequence] {
+			return fmt.Errorf("invalid or shared task readiness sequence")
+		}
+		sequences[t.ReadySequence] = true
 		if t.QueueKey != nil {
-			p := strings.Split(string(t.QueueKey), "/")
-			if len(p) != 5 || p[0] != "ready" || p[1] != t.Owner || p[4] != "" {
-				return fmt.Errorf("invalid ready key")
-			}
-			seq, err := strconv.ParseUint(p[3], 10, 64)
-			if err != nil || seq == 0 || seq > counters["ready_sequence"] || !bytes.Equal(t.QueueKey, indexKey("ready/"+t.Owner, t.ReadyAt, seq, "")) {
-				return fmt.Errorf("invalid ready sequence")
+			due := dueKey(t.ReadyAt, t.ReadySequence)
+			bid := bidKey(t.MaxGasPrice, t.ReadyAt, t.ReadySequence)
+			if !bytes.Equal(t.QueueKey, due) && (!bytes.Equal(t.QueueKey, bid) || t.ReadyAt > uint64(ctx.BlockHeight())) {
+				return fmt.Errorf("invalid due or bid key")
 			}
 			if _, duplicate := expected[string(t.QueueKey)]; duplicate {
 				return fmt.Errorf("tasks share a readiness slot")
 			}
 			expected[string(t.QueueKey)] = key
-			readyOwners[t.Owner] = true
 		}
 		if t.Inbox != nil {
 			if err := validResolution(*t.Inbox); err != nil {
@@ -201,8 +213,11 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 			if due == 0 || due >= t.ExpiresAt {
 				return fmt.Errorf("wait outside lease")
 			}
+			if t.Inbox == nil && t.ReadyAt != due {
+				return fmt.Errorf("wait readiness height mismatch")
+			}
 			if t.TimerKey != nil {
-				if !bytes.Equal(t.TimerKey, indexKey("timer", due, t.ID, t.Owner)) {
+				if t.Inbox != nil || !bytes.Equal(t.TimerKey, indexKey("timer", due, t.ReadySequence, t.Owner)) {
 					return fmt.Errorf("invalid timer key")
 				}
 				expected[string(t.TimerKey)] = key
@@ -223,20 +238,6 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 		b := make([]byte, 8)
 		binary.BigEndian.PutUint64(b, n)
 		expected["active/"+owner] = b
-	}
-	for owner := range readyOwners {
-		meta := "contract-queue/" + owner
-		key := s.Get([]byte(meta))
-		p := strings.Split(string(key), "/")
-		if len(p) != 3 || p[0] != "contracts" || p[2] != owner {
-			return fmt.Errorf("missing contract queue")
-		}
-		seq, err := strconv.ParseUint(p[1], 10, 64)
-		if err != nil || seq == 0 || seq > counters["contract_sequence"] || string(key) != fmt.Sprintf("contracts/%020d/%s", seq, owner) {
-			return fmt.Errorf("invalid contract queue sequence")
-		}
-		expected[meta] = key
-		expected[string(key)] = []byte(owner)
 	}
 	all := s.Iterator(nil, nil)
 	defer all.Close()

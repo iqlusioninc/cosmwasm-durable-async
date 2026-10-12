@@ -5,12 +5,17 @@ use crate::{
     runtime_store::*,
     *,
 };
-use cosmwasm_std::{Addr, Api, Binary, Coin, CosmosMsg, StdError, StdResult, Storage, Uint128};
+use cosmwasm_std::{
+    Addr, Api, Binary, Coin, CosmosMsg, Decimal, Order, StdError, StdResult, Storage, Uint128,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub block_gas: u64,
+    pub price_grace_blocks: u64,
+    pub price_adjust_denominator: u64,
+    pub max_price_pauses: u32,
     pub host_gas: u64,
     /// Separate application-reserved maintenance allocation.
     pub maintenance_gas: u64,
@@ -92,6 +97,8 @@ pub struct ExecutionTask {
     pub charged: Uint128,
     pub reserved: Uint128,
     pub last_attempt: Option<u64>,
+    #[serde(default)]
+    pub ready_at: u64,
     pub output: Option<Binary>,
     pub error: Option<String>,
     pub expires_at: u64,
@@ -101,9 +108,14 @@ pub struct ExecutionTask {
 }
 #[derive(Default, Debug, PartialEq)]
 pub struct BlockReport {
+    pub base_price: Decimal,
+    pub next_base_price: Decimal,
+    /// Metered execution gas, excluding the fixed host accounting charge.
+    pub poll_gas_used: u64,
     pub polls: u32,
     pub visits: u32,
     pub promotions: u32,
+    pub price_pauses: u32,
     pub expirations: u32,
     pub prunes: u32,
     pub gas_used: u64,
@@ -138,19 +150,14 @@ fn task_key(c: &str, id: u64) -> Vec<u8> {
 fn count_key(c: &str) -> Vec<u8> {
     [b"na2/count/".as_slice(), c.as_bytes()].concat()
 }
-fn ready_prefix(c: &str) -> Vec<u8> {
-    [b"na2/ready/".as_slice(), c.as_bytes(), b"/"].concat()
-}
-fn member_key(c: &str) -> Vec<u8> {
-    [b"na2/member/".as_slice(), c.as_bytes()].concat()
-}
-fn remove_empty_ring(s: &mut dyn Storage, c: &str) {
-    if first(s, &ready_prefix(c)).is_none() {
-        if let Some(key) = s.get(&member_key(c)) {
-            s.remove(&key);
-            s.remove(&member_key(c));
-        }
-    }
+fn bid_key(bid: Decimal, h: u64, seq: u64) -> Vec<u8> {
+    [
+        b"na2/bid/".as_slice(),
+        bid_component(bid).as_bytes(),
+        &h.to_be_bytes(),
+        &seq.to_be_bytes(),
+    ]
+    .concat()
 }
 fn save(s: &mut dyn Storage, t: &ExecutionTask) -> StdResult<()> {
     put(s, &task_key(&t.contract, t.task_id), t)
@@ -190,19 +197,19 @@ fn schedule(s: &mut dyn Storage, t: &mut ExecutionTask, h: u64) -> StdResult<()>
     t.queue_key = Some(timed(s, b"na2/due/", h, t)?.into());
     Ok(())
 }
-fn ring(s: &mut dyn Storage, c: &str) -> StdResult<()> {
-    if s.get(&member_key(c)).is_none() {
-        let seq = bump(s, b"na2/ring-sequence")?;
-        let k = [b"na2/ring/".as_slice(), &seq.to_be_bytes()].concat();
-        put(s, &k, &c)?;
-        s.set(&member_key(c), &k);
-    }
-    Ok(())
-}
-fn ready(s: &mut dyn Storage, t: &mut ExecutionTask) -> StdResult<()> {
-    unqueue(s, t);
+fn ready(s: &mut dyn Storage, t: &mut ExecutionTask, bid: Decimal, h: u64) -> StdResult<()> {
     let seq = bump(s, b"na2/sequence")?;
-    let k = [ready_prefix(&t.contract), seq.to_be_bytes().to_vec()].concat();
+    ready_with_sequence(s, t, bid, h, seq)
+}
+fn ready_with_sequence(
+    s: &mut dyn Storage,
+    t: &mut ExecutionTask,
+    bid: Decimal,
+    h: u64,
+    seq: u64,
+) -> StdResult<()> {
+    unqueue(s, t);
+    let k = bid_key(bid, h, seq);
     put(
         s,
         &k,
@@ -213,7 +220,8 @@ fn ready(s: &mut dyn Storage, t: &mut ExecutionTask) -> StdResult<()> {
     )?;
     t.queue_key = Some(k.into());
     t.status = ExecutionStatus::Runnable;
-    ring(s, &t.contract)
+    t.ready_at = h;
+    Ok(())
 }
 fn due(s: &dyn Storage, prefix: &[u8], h: u64) -> Option<(Vec<u8>, Vec<u8>)> {
     first(s, prefix).filter(|(k, _)| {
@@ -222,6 +230,29 @@ fn due(s: &dyn Storage, prefix: &[u8], h: u64) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 impl Runtime {
+    pub fn base_price(&self, s: &dyn Storage) -> StdResult<Decimal> {
+        if self.config.block_gas / 2 == 0 || self.config.price_adjust_denominator == 0 {
+            return Err(err("invalid runtime price configuration"));
+        }
+        s.get(b"na2/base-price")
+            .map(cosmwasm_std::from_json)
+            .transpose()
+            .map(|price| price.unwrap_or(self.keeper.config.gas_price))
+    }
+
+    fn live_keeper(&self, s: &dyn Storage) -> StdResult<Keeper> {
+        let mut config = self.keeper.config.clone();
+        config.gas_price = self.base_price(s)?;
+        config.min_base_price = self.keeper.config.gas_price;
+        config.target_gas = self.config.block_gas / 2;
+        config.price_grace_blocks = self.config.price_grace_blocks;
+        config.last_block_poll_gas_used = number(s, b"na2/last-poll-gas")?;
+        Ok(Keeper {
+            config,
+            escrow: self.keeper.escrow.clone(),
+        })
+    }
+
     fn maintenance(&self, report: &mut BlockReport) -> bool {
         if self.config.maintenance_gas_per_item == 0
             || self.config.maintenance_gas_per_item
@@ -249,6 +280,7 @@ impl Runtime {
         let mut reserved = t.clone();
         reserved.wait_sequence = u64::MAX;
         reserved.last_attempt = Some(u64::MAX);
+        reserved.ready_at = u64::MAX;
         reserved.charged = Uint128::MAX;
         reserved.reserved = Uint128::MAX;
         reserved.storage_fee = Uint128::MAX;
@@ -256,8 +288,7 @@ impl Runtime {
         reserved.expires_at = u64::MAX;
         reserved.retain_until = u64::MAX;
         reserved.status = ExecutionStatus::Completed; // longest execution status
-        reserved.queue_key =
-            Some(vec![0; (ready_prefix(&t.contract).len() + 8).max(b"na2/due/".len() + 16)].into());
+        reserved.queue_key = Some(vec![0; b"na2/bid/".len() + 32 + 16].into());
         if inbox_reserve != 0 {
             reserved.inbox = None;
         }
@@ -361,15 +392,16 @@ impl Runtime {
         msg: RuntimeQuery,
     ) -> StdResult<Binary> {
         match msg {
-            RuntimeQuery::Funding(msg) => self.keeper.query(api, s, h, msg),
+            RuntimeQuery::Funding(msg) => self.live_keeper(s)?.query_runtime(api, s, h, msg),
             RuntimeQuery::Task { contract, task_id } => {
                 let task = self.task(s, &api.addr_validate(&contract)?, task_id, h)?;
-                let funding: TaskFunding = cosmwasm_std::from_json(self.keeper.query(
-                    api,
-                    s,
-                    h,
-                    SchedulerQuery::TaskFunding { contract, task_id },
-                )?)?;
+                let funding: TaskFunding =
+                    cosmwasm_std::from_json(self.live_keeper(s)?.query_runtime(
+                        api,
+                        s,
+                        h,
+                        SchedulerQuery::TaskFunding { contract, task_id },
+                    )?)?;
                 cosmwasm_std::to_json_binary(&TaskResponse {
                     contract: task.contract,
                     task_id: task.task_id,
@@ -407,6 +439,7 @@ impl Runtime {
             _ => return Err(err("unsupported policy update")),
         };
         let mut cache = Cache::new(s);
+        let base_price = self.base_price(&cache)?;
         let mut t = load(&cache, c.as_str(), id)?;
         let mut f = host::load(&cache, c, id)?;
         if api.addr_validate(actor)?.as_str() != f.control {
@@ -491,8 +524,24 @@ impl Runtime {
                 }
                 f.gas_per_poll = gas_per_poll;
                 f.max_gas_price = max_gas_price;
-                f.max_attempt_charge = self.keeper.attempt_charge(gas_per_poll)?;
+                f.max_attempt_charge = self.keeper.attempt_charge_at(gas_per_poll, base_price)?;
                 f.refund = refund.to_string();
+                if let Some(key) = t
+                    .queue_key
+                    .as_ref()
+                    .filter(|key| key.as_slice().starts_with(b"na2/bid/"))
+                {
+                    // Budget changes retain both readiness age and the original
+                    // sequence, including when joining an existing bid tier.
+                    let seq = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
+                    let value = cache
+                        .get(key.as_slice())
+                        .ok_or_else(|| err("missing bid entry"))?;
+                    let new_key = bid_key(max_gas_price, t.ready_at, seq);
+                    cache.remove(key.as_slice());
+                    cache.set(&new_key, &value);
+                    t.queue_key = Some(new_key.into());
+                }
             }
             _ => unreachable!(),
         }
@@ -514,14 +563,20 @@ impl Runtime {
         allocated_bytes: u64,
         host: &mut impl PollHost,
     ) -> StdResult<u64> {
+        let base_price = self.base_price(storage)?;
         let SchedulerMsg::RegisterTask {
             expires_at,
             gas_per_poll,
+            max_gas_price,
+            funds: deposit,
             ..
         } = &funding
         else {
             return Err(err("registration funding required"));
         };
+        if *max_gas_price < self.keeper.config.gas_price {
+            return Err(err("bid below minimum base price"));
+        }
         if allocated_bytes == 0
             || self.config.host_gas == 0
             || self.config.maintenance_gas_per_item == 0
@@ -560,21 +615,29 @@ impl Runtime {
                     .ok_or_else(|| err("lease overflow"))?,
             ))?
             .checked_add(self.config.cleanup_fee)?;
+        let attempt_charge = self.keeper.attempt_charge_at(*gas_per_poll, base_price)?;
+        if deposit.amount < storage_fee.checked_add(attempt_charge)? {
+            return Err(err("insufficient initial task funding"));
+        }
         let code_checksum = host.code_checksum(contract.as_str())?;
         if code_checksum.is_empty() {
             return Err(err("missing code identity"));
         }
         let mut cache = Cache::new(storage);
-        let response =
-            self.keeper
-                .execute(api, &mut cache, height, contract, funding, |s, f, t, c| {
-                    host.transfer(s, f, t, c)
-                })?;
+        let response = self.keeper.execute_runtime(
+            api,
+            &mut cache,
+            height,
+            contract,
+            funding,
+            |s, f, t, c| host.transfer(s, f, t, c),
+        )?;
         let id = cosmwasm_std::from_json(response.data.ok_or_else(|| err("missing task ID"))?)?;
         let mut funds = host::load(&cache, contract, id)?;
         funds.available = funds.available.checked_sub(storage_fee)?;
         funds.allocated_bytes = allocated_bytes;
         funds.storage_lease_paid = storage_fee;
+        funds.max_attempt_charge = attempt_charge;
         if !storage_fee.is_zero() {
             host.transfer(
                 &mut cache,
@@ -582,14 +645,6 @@ impl Runtime {
                 &self.config.fee_collector,
                 &Coin::new(storage_fee.u128(), &self.keeper.config.denom),
             )?;
-        }
-        if funds.available < self.keeper.attempt_charge(funds.gas_per_poll)?
-            && funds.status == TaskStatus::Runnable
-        {
-            funds.status = TaskStatus::Paused {
-                reason: PauseReason::InsufficientFunds,
-                resume: ResumeState::Runnable,
-            };
         }
         host::save(&mut cache, contract, &funds)?;
         let mut task = ExecutionTask {
@@ -611,6 +666,7 @@ impl Runtime {
             charged: Uint128::zero(),
             reserved: Uint128::zero(),
             last_attempt: None,
+            ready_at: 0,
             output: None,
             error: None,
             expires_at: expiry,
@@ -712,7 +768,8 @@ impl Runtime {
                 t.status = ExecutionStatus::Runnable;
                 schedule(s, &mut t, next(h)?)?;
             } else {
-                ready(s, &mut t)?;
+                let funding = host::load(s, c, id)?;
+                ready(s, &mut t, funding.max_gas_price, h)?;
             }
             // Keep the public status in step with the Go adapter's delivery.
             let mut funding = host::load(s, c, id)?;
@@ -739,15 +796,14 @@ impl Runtime {
             _ => return Err(err("use executable registration")),
         };
         let mut cache = Cache::new(s);
+        let keeper = self.live_keeper(&cache)?;
         let mut t = load(&cache, c.as_str(), id)?;
         if !t.reserved.is_zero() && (resume || cancel) {
             return Err(err("cannot manage an in-flight poll"));
         }
-        let response = self
-            .keeper
-            .execute(api, &mut cache, h, c, msg, |s, f, t, c| {
-                host.transfer(s, f, t, c)
-            })?;
+        let response = keeper.execute_runtime(api, &mut cache, h, c, msg, |s, f, t, c| {
+            host.transfer(s, f, t, c)
+        })?;
         if cancel {
             self.finish(&mut cache, &mut t, ExecutionStatus::Cancelled, host)?;
         } else if resume {
@@ -845,7 +901,6 @@ impl Runtime {
             return Err(err("already terminal"));
         }
         unqueue(s, t);
-        remove_empty_ring(s, &t.contract);
         s.remove(t.expiry_key.as_slice());
         t.status = status;
         t.wait = None;
@@ -969,11 +1024,16 @@ impl Runtime {
         h: u64,
         host: &mut impl PollHost,
     ) -> StdResult<BlockReport> {
+        let base_price = self.base_price(s)?;
         // One invocation per height, persisted to survive host recreation/replay.
         if s.get(b"na2/last-block").is_some() && number(s, b"na2/last-block")? >= h {
             return Ok(BlockReport::default());
         }
-        let mut report = BlockReport::default();
+        let mut report = BlockReport {
+            base_price,
+            next_base_price: base_price,
+            ..BlockReport::default()
+        };
         for _ in 0..self.config.max_expirations {
             if !self.maintenance(&mut report) {
                 break;
@@ -1025,30 +1085,92 @@ impl Runtime {
             };
             let r: Reference = cosmwasm_std::from_json(value)?;
             let mut t = load(s, &r.contract, r.id)?;
+            let ready_at = u64::from_be_bytes(
+                key[b"na2/due/".len()..b"na2/due/".len() + 8]
+                    .try_into()
+                    .unwrap(),
+            );
+            let seq = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
             s.remove(&key);
-            t.queue_key = None;
             if !terminal(&t) && t.status != ExecutionStatus::Paused && h < t.expires_at {
-                ready(s, &mut t)?;
+                let addr = Addr::unchecked(&r.contract);
+                let mut f = host::load(s, &addr, r.id)?;
+                // Resolve matured waits before price maintenance can pause them.
+                // An authenticated result already in the inbox takes precedence.
+                if t.inbox.is_none() {
+                    t.inbox = match t.wait {
+                        Some(Wait::Height { .. }) => Some(Resolution::Timer {}),
+                        Some(Wait::Operation { .. }) => Some(Resolution::Timeout {}),
+                        None => None,
+                    };
+                }
+                f.status = TaskStatus::Runnable;
+                host::save(s, &addr, &f)?;
+                // Promotion preserves the original queue position even when
+                // newer deliveries already entered the same readiness height.
+                ready_with_sequence(s, &mut t, f.max_gas_price, ready_at, seq)?;
+            } else {
+                t.queue_key = None;
             }
             save(s, &t)?;
             report.promotions += 1;
         }
+        // The reverse walk inspects at most max_price_pauses entries, including
+        // younger tasks it skips. Each inspection shares the maintenance meter.
+        let mut price_cursor = b"na2/bid0".to_vec();
+        for _ in 0..self.config.max_price_pauses {
+            if !self.maintenance(&mut report) {
+                break;
+            }
+            let Some((key, value)) = s
+                .range(Some(b"na2/bid/"), Some(&price_cursor), Order::Descending)
+                .next()
+            else {
+                break;
+            };
+            price_cursor = key.clone(); // exclusive upper bound; iterator closed before writes
+            let r: Reference = cosmwasm_std::from_json(value)?;
+            let mut t = load(s, &r.contract, r.id)?;
+            let addr = Addr::unchecked(&r.contract);
+            let mut f = host::load(s, &addr, r.id)?;
+            if f.max_gas_price >= base_price {
+                break;
+            }
+            if h >= t.expires_at
+                || h.saturating_sub(t.ready_at.max(t.last_attempt.unwrap_or(0)))
+                    < self.config.price_grace_blocks
+            {
+                continue;
+            }
+            unqueue(s, &mut t);
+            t.status = ExecutionStatus::Paused;
+            f.status = TaskStatus::Paused {
+                reason: PauseReason::PriceLimit,
+                resume: ResumeState::Runnable,
+            };
+            save(s, &t)?;
+            host::save(s, &addr, &f)?;
+            report.price_pauses += 1;
+        }
+        // A single lexical cursor and visit counter cover the entire block.
+        // Oversized entries remain persisted but cannot be revisited this block.
+        let mut cursor = b"na2/bid/".to_vec();
         while report.visits < self.config.max_visits {
             if !self.maintenance(&mut report) {
                 break;
             }
-            let Some((ring_key, value)) = first(s, b"na2/ring/") else {
+            let Some((ready_key, value)) = s
+                .range(Some(&cursor), Some(b"na2/bid0"), Order::Ascending)
+                .next()
+            else {
                 break;
             };
-            let c: String = cosmwasm_std::from_json(value)?;
             report.visits += 1;
-            let Some((ready_key, value)) = first(s, &ready_prefix(&c)) else {
-                s.remove(&ring_key);
-                s.remove(&member_key(&c));
-                continue;
-            };
+            cursor = ready_key.clone();
+            cursor.push(0); // exclusive lower bound; iterator is closed before writes
             let r: Reference = cosmwasm_std::from_json(value)?;
-            let mut t = load(s, &r.contract, r.id)?;
+            let c = r.contract;
+            let mut t = load(s, &c, r.id)?;
             let addr = Addr::unchecked(&c);
             let mut f = host::load(s, &addr, t.task_id)?;
             if h >= t.expires_at {
@@ -1057,13 +1179,14 @@ impl Runtime {
                 save(s, &t)?;
                 continue;
             }
-            // Keep the ring head untouched on deferral: the next fresh block
-            // reserves this contract before admitting smaller tasks.
-            if f.gas_per_poll > self.config.block_gas - report.gas_used {
+            // Descending bid order makes every subsequent task ineligible too.
+            // Leave priced-out work queued for the separate grace pause pass.
+            if f.max_gas_price < base_price {
                 break;
             }
-            s.remove(&ring_key);
-            s.remove(&member_key(&c));
+            if f.gas_per_poll > self.config.block_gas - report.gas_used {
+                continue;
+            }
             s.remove(&ready_key);
             t.queue_key = None;
             if t.last_attempt == Some(h) {
@@ -1071,13 +1194,13 @@ impl Runtime {
                 save(s, &t)?;
                 continue;
             }
-            let charge = self.keeper.attempt_charge(f.gas_per_poll)?;
-            let blocked = if f.max_gas_price < self.keeper.config.gas_price {
-                Some(PauseReason::PriceLimit)
-            } else if f.available < charge {
-                Some(PauseReason::InsufficientFunds)
-            } else {
-                None
+            // A price increase can make an admitted task's next reservation
+            // exceed the Uint128 coin domain. No valid escrow can afford that
+            // charge; pause it like any other insufficient-funds task.
+            let charge = self.keeper.attempt_charge_at(f.gas_per_poll, base_price);
+            let blocked = match &charge {
+                Ok(charge) if f.available >= *charge => None,
+                _ => Some(PauseReason::InsufficientFunds),
             };
             if let Some(reason) = blocked {
                 t.status = ExecutionStatus::Paused;
@@ -1088,6 +1211,7 @@ impl Runtime {
                 save(s, &t)?;
                 host::save(s, &addr, &f)?;
             } else {
+                let charge = charge?; // Only the affordable, representable branch reaches here.
                 t.last_attempt = Some(h);
                 t.reserved = charge;
                 f.available = f.available.checked_sub(charge)?;
@@ -1156,7 +1280,7 @@ impl Runtime {
                 } else {
                     drop(cache);
                 }
-                let paid = self.keeper.attempt_charge(gas)?;
+                let paid = self.keeper.attempt_charge_at(gas, base_price)?;
                 f.available = f.available.checked_add(charge.checked_sub(paid)?)?;
                 f.reserved = Uint128::zero();
                 f.cumulative_execution_fees = f.cumulative_execution_fees.checked_add(paid)?;
@@ -1203,11 +1327,21 @@ impl Runtime {
                 save(s, &t)?;
                 report.polls += 1;
                 report.gas_used += gas;
-            }
-            if first(s, &ready_prefix(&c)).is_some() {
-                ring(s, &c)?;
+                // Poll and message execution share the task cap. Saturation
+                // above bounds even an over-reporting host to that cap, and
+                // reservation bounds the block sum without overflowing u64.
+                report.poll_gas_used += gas - self.config.host_gas;
             }
         }
+        report.next_base_price = next_base_price(
+            base_price,
+            report.poll_gas_used,
+            self.config.block_gas / 2,
+            self.keeper.config.gas_price,
+            self.config.price_adjust_denominator,
+        )?;
+        put(s, b"na2/base-price", &report.next_base_price)?;
+        put(s, b"na2/last-poll-gas", &report.poll_gas_used)?;
         put(s, b"na2/last-block", &h)?;
         Ok(report)
     }

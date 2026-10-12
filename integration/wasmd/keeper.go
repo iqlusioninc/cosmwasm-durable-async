@@ -26,7 +26,8 @@ type Bank interface {
 type Config struct {
 	ModuleEndBlockGas                                                       uint64
 	Denom                                                                   string
-	GasPrice                                                                sdkmath.LegacyDec
+	MinBasePrice                                                            sdkmath.LegacyDec
+	PriceGraceBlocks, PriceAdjustDenominator                                uint64
 	MaxPollGas, AsyncGas, MaintenanceGas, HostReserve                       uint64
 	MaxTasks, MaxBytes, MaxLifetime, MaxMessages, MaxVisits, MaxMaintenance uint64
 	StorageByteBlockPrice, CleanupPrice                                     sdkmath.Int
@@ -48,6 +49,17 @@ func taskKey(owner string, id uint64) []byte { return []byte(fmt.Sprintf("task/%
 func indexKey(kind string, height, id uint64, owner string) []byte {
 	return []byte(fmt.Sprintf("%s/%020d/%020d/%s", kind, height, id, owner))
 }
+func dueKey(height, sequence uint64) []byte {
+	return []byte(fmt.Sprintf("due/%020d/%020d", height, sequence))
+}
+func bidKey(bid string, height, sequence uint64) []byte {
+	price, err := sdkmath.LegacyNewDecFromStr(bid)
+	if err != nil {
+		panic(err)
+	}
+	return []byte(fmt.Sprintf("bid/%s/%020d/%020d", bidComponent(price), height, sequence))
+}
+
 func number(s storetypes.KVStore, key string) uint64 {
 	b := s.Get([]byte(key))
 	if b == nil {
@@ -125,68 +137,40 @@ func (k *Keeper) transfer(ctx sdk.Context, from, to sdk.AccAddress, n sdkmath.In
 	}
 	return k.Bank.SendCoins(ctx, from, to, k.coin(n))
 }
-func (k *Keeper) fee(gas uint64) sdkmath.Int {
-	return k.Config.GasPrice.MulInt(sdkmath.NewIntFromUint64(gas)).Ceil().TruncateInt()
+func (k *Keeper) feeAt(gas uint64, price sdkmath.LegacyDec) sdkmath.Int {
+	return price.MulInt(sdkmath.NewIntFromUint64(gas)).Ceil().TruncateInt()
 }
-func (k *Keeper) enqueue(ctx sdk.Context, t *Task, height uint64) {
+func (k *Keeper) fee(ctx sdk.Context, gas uint64) sdkmath.Int {
+	return k.feeAt(gas, k.basePrice(ctx))
+}
+func (k *Keeper) nextReadySequence(ctx sdk.Context) uint64 {
 	s := k.store(ctx)
-	if t.QueueKey != nil {
-		s.Delete(t.QueueKey)
-	}
 	n := number(s, "ready_sequence")
 	if n == math.MaxUint64 {
 		panic("ready sequence exhausted")
 	}
 	n++
 	setNumber(s, "ready_sequence", n)
+	return n
+}
+func (k *Keeper) enqueue(ctx sdk.Context, t *Task, height uint64) {
+	k.enqueueWithSequence(ctx, t, height, k.nextReadySequence(ctx))
+}
+func (k *Keeper) enqueueWithSequence(ctx sdk.Context, t *Task, height, sequence uint64) {
+	s := k.store(ctx)
+	if t.QueueKey != nil {
+		s.Delete(t.QueueKey)
+	}
+	// Scheduler-phase wakeups enter due; their producer chooses the eligible
+	// height. Timers retain their deadline, callbacks and yields use h+1.
 	t.ReadyAt = height
-	t.QueueKey = indexKey("ready/"+t.Owner, height, n, "")
+	t.ReadySequence = sequence
+	if height > uint64(ctx.BlockHeight()) || ctx.Value(schedulerKey{}) == true {
+		t.QueueKey = dueKey(height, sequence)
+	} else {
+		t.QueueKey = bidKey(t.MaxGasPrice, height, sequence)
+	}
 	s.Set(t.QueueKey, taskKey(t.Owner, t.ID))
-	k.ensureContract(ctx, t.Owner)
-}
-func (k *Keeper) ensureContract(ctx sdk.Context, owner string) {
-	s := k.store(ctx)
-	meta := []byte("contract-queue/" + owner)
-	if s.Has(meta) {
-		return
-	}
-	n := number(s, "contract_sequence")
-	if n == math.MaxUint64 {
-		panic("contract queue exhausted")
-	}
-	n++
-	setNumber(s, "contract_sequence", n)
-	key := []byte(fmt.Sprintf("contracts/%020d/%s", n, owner))
-	s.Set(key, []byte(owner))
-	s.Set(meta, key)
-}
-func (k *Keeper) rotateContract(ctx sdk.Context, key []byte, owner string) {
-	s := k.store(ctx)
-	s.Delete(key)
-	s.Delete([]byte("contract-queue/" + owner))
-	p := []byte("ready/" + owner + "/")
-	it := s.Iterator(p, storetypes.PrefixEndBytes(p))
-	exists := it.Valid()
-	it.Close()
-	if exists {
-		k.ensureContract(ctx, owner)
-	}
-}
-func (k *Keeper) cleanContract(ctx sdk.Context, owner string) {
-	s := k.store(ctx)
-	meta := []byte("contract-queue/" + owner)
-	key := s.Get(meta)
-	if key == nil {
-		return
-	}
-	p := []byte("ready/" + owner + "/")
-	it := s.Iterator(p, storetypes.PrefixEndBytes(p))
-	exists := it.Valid()
-	it.Close()
-	if !exists {
-		s.Delete(key)
-		s.Delete(meta)
-	}
 }
 func (k *Keeper) clearWait(ctx sdk.Context, t *Task) {
 	s := k.store(ctx)
@@ -207,7 +191,6 @@ func (k *Keeper) finishTo(ctx sdk.Context, t *Task, status, recipient string) er
 	if t.QueueKey != nil {
 		s.Delete(t.QueueKey)
 	}
-	k.cleanContract(ctx, t.Owner)
 	k.clearWait(ctx, t)
 	s.Delete(t.ExpiryKey)
 	t.QueueKey = nil
@@ -233,6 +216,7 @@ func (k *Keeper) finishTo(ctx sdk.Context, t *Task, status, recipient string) er
 	k.save(ctx, *t)
 	return nil
 }
+
 // settle is finish for scheduler paths, which must never halt the chain. If
 // the bank rejects the refund, the escrow goes to the controller, then to the
 // owning contract. If all three reject it, it stays in the module account
@@ -271,6 +255,10 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	if err := validateMaxGasPrice(r.MaxGasPrice); err != nil {
 		return 0, err
 	}
+	price, _ := sdkmath.LegacyNewDecFromStr(r.MaxGasPrice)
+	if price.LT(c.MinBasePrice) {
+		return 0, fmt.Errorf("bid below minimum base price")
+	}
 	if r.GasPerPoll <= c.HostReserve || r.GasPerPoll > c.MaxPollGas || r.ExpiresAt <= height || r.ExpiresAt-height > c.MaxLifetime || r.AllocatedBytes < 1024 || r.AllocatedBytes > c.MaxBytes || uint64(len(r.Program.Input)) > r.AllocatedBytes/2 || len(r.Program.Kind) > 128 || r.Program.Kind == "" {
 		return 0, fmt.Errorf("invalid limits")
 	}
@@ -301,7 +289,7 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	code := k.Wasm.GetCodeInfo(ctx, ci.CodeID)
 	lease := c.StorageByteBlockPrice.Mul(sdkmath.NewIntFromUint64(r.AllocatedBytes)).Mul(sdkmath.NewIntFromUint64(r.ExpiresAt - height)).Add(c.CleanupPrice)
-	if r.Funds.Amount.LT(lease.Add(k.fee(r.GasPerPoll))) {
+	if r.Funds.Amount.LT(lease.Add(k.fee(ctx, r.GasPerPoll))) {
 		return 0, fmt.Errorf("insufficient prepaid lease and execution funding")
 	}
 	id := number(s, "next_id")
@@ -310,7 +298,9 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	id++
 	t := Task{ID: id, Owner: owner.String(), Register: r, Checksum: code.CodeHash, Status: "runnable", Escrow: r.Funds.Amount.Sub(lease).String(), Fees: "0", Reserved: "0", LeasePaid: lease.String()}
-	if e:=k.checkQuota(t);e!=nil{return 0,e}
+	if e := k.checkQuota(t); e != nil {
+		return 0, e
+	}
 	if e := k.transfer(ctx, owner, authtypes.NewModuleAddress(ModuleName), r.Funds.Amount); e != nil {
 		return 0, e
 	}
@@ -355,6 +345,12 @@ func (k *Keeper) Deliver(ctx sdk.Context, owner string, id, sequence uint64, res
 	t.Inbox = &r
 	if e := k.checkQuota(t); e != nil {
 		return e
+	}
+	// An authenticated result replaces its timeout slot. Preserve the wait
+	// metadata for the resume request, but never fire the obsolete timer later.
+	if t.TimerKey != nil {
+		k.store(ctx).Delete(t.TimerKey)
+		t.TimerKey = nil
 	}
 	if t.Status != "paused" {
 		t.Status = "runnable"
@@ -413,7 +409,7 @@ func (k *Keeper) Management(ctx sdk.Context, owner string, raw json.RawMessage) 
 				return fmt.Errorf("unauthorized or not paused")
 			}
 			p, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
-			if p.LT(k.Config.GasPrice) || amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
+			if p.LT(k.basePrice(ctx)) || amount(t.Escrow).LT(k.fee(ctx, t.GasPerPoll)) {
 				return fmt.Errorf("insufficient funds or price limit")
 			}
 			t.Pause = ""
@@ -497,7 +493,7 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 		}
 	}
 	if q["funding_config"] != nil {
-		return marshal(map[string]any{"denom": k.Config.Denom, "gas_price": k.Config.GasPrice.String(), "max_gas_per_poll": k.Config.MaxPollGas, "max_lifetime_blocks": k.Config.MaxLifetime}), nil
+		return marshal(map[string]any{"denom": k.Config.Denom, "gas_price": k.basePrice(ctx).String(), "min_base_price": k.Config.MinBasePrice.String(), "target_gas": (k.Config.AsyncGas - k.Config.MaintenanceGas) / 2, "price_grace_blocks": k.Config.PriceGraceBlocks, "last_block_poll_gas_used": number(k.store(ctx), "last_poll_gas"), "max_gas_per_poll": k.Config.MaxPollGas, "max_lifetime_blocks": k.Config.MaxLifetime}), nil
 	}
 	p := q["task"]
 	if p == nil {
@@ -521,7 +517,11 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 	}
 	if q["task_funding"] != nil {
 		status := response.Status
-		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
+		charge, err := policyUint128(k.fee(ctx, t.GasPerPoll).BigInt())
+		if err != nil {
+			return nil, err
+		}
+		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": charge.String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
 	}
 	return marshal(response), nil
 }

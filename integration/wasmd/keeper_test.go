@@ -35,6 +35,9 @@ func TestGoldenABI(t *testing.T) {
 	require.NoError(t, e)
 	require.NotEmpty(t, files)
 	for _, f := range files {
+		if filepath.Base(f) == "base-price.json" {
+			continue // Pricing math fixture, not an ABI round-trip fixture.
+		}
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			b, e := os.ReadFile(f)
 			require.NoError(t, e)
@@ -133,7 +136,7 @@ func TestRealWasmOutboundRollback(t *testing.T) {
 	require.True(t, amount(task.Escrow).LT(before))
 	require.True(t, amount(task.Fees).IsPositive())
 	require.Error(t, k.CheckMigration(ctx, owner))
-	t.Logf("real Wasm outbound-failure attempt fees=%s gas-price=%s pause=%s", task.Fees, k.Config.GasPrice, task.Pause)
+	t.Logf("real Wasm outbound-failure attempt fees=%s gas-price=%s pause=%s", task.Fees, k.basePrice(ctx), task.Pause)
 	snapshot := marshal(task)
 	replacement := &Keeper{Key: k.Key, Bank: k.Bank, Wasm: k.Wasm, Config: k.Config, messenger: k.messenger}
 	restored, e := replacement.load(ctx, owner.String(), 1)

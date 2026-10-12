@@ -5,6 +5,32 @@ use native_async::*;
 use support::*;
 
 #[test]
+fn legacy_keeper_still_rejects_zero_fixed_price() {
+    let mut s = Suite::new();
+    s.app
+        .init_modules(|router, _, _| router.custom.keeper.config.gas_price = Decimal::zero());
+    assert!(s
+        .app
+        .wrap()
+        .query_wasm_smart::<FundingConfig>(&s.contract, &AsyncQueryMsg::FundingConfig {},)
+        .is_err());
+    assert!(s
+        .app
+        .execute_contract(
+            s.owner.clone(),
+            s.contract.clone(),
+            &Execute::Register {
+                gas_funds: Uint128::new(40),
+            },
+            &coins(40, "ugas")
+        )
+        .is_err());
+    assert_eq!(s.balance(&s.owner), 10_000);
+    assert_eq!(s.balance(&s.contract), 0);
+    assert_eq!(s.balance(&s.escrow), 0);
+}
+
+#[test]
 fn failed_refunds_preserve_task_escrow_and_recipient_balance() {
     let mut s = Suite::new();
     s.register(40, 40);

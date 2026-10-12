@@ -2,6 +2,20 @@ use native_async::{PollResponse, RuntimeMsg, TaskResponse, TaskSudoMsg};
 use serde::{de::DeserializeOwned, Serialize};
 
 #[test]
+fn funding_config_accepts_legacy_wire_without_price_observability() {
+    let config: native_async::FundingConfig = serde_json::from_value(serde_json::json!({
+        "denom": "ugas", "gas_price": "1", "max_gas_per_poll": 100,
+        "max_lifetime_blocks": 100,
+    }))
+    .unwrap();
+    assert_eq!(config.gas_price, cosmwasm_std::Decimal::one());
+    assert_eq!(config.min_base_price, cosmwasm_std::Decimal::zero());
+    assert_eq!(config.target_gas, 0);
+    assert_eq!(config.price_grace_blocks, 0);
+    assert_eq!(config.last_block_poll_gas_used, 0);
+}
+
+#[test]
 fn go_funding_query_decimal_boundaries_decode_through_typed_rust_abi() {
     let cases: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../../fixtures/native-async/decimal-domain.json"

@@ -1,6 +1,7 @@
 package async
 
 import (
+	"bytes"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	"github.com/stretchr/testify/require"
@@ -16,6 +17,74 @@ func TestSnapshotRequiresConsensusManifest(t *testing.T) {
 	h.k.Config.MaxVisits++
 	require.Error(t, h.k.ValidateState(h.ctx))
 	require.Error(t, h.k.InitState(h.ctx), "initialization must never overwrite an existing manifest")
+}
+
+// Restored scheduler state must use canonical due/bid keys bound to the exact
+// task identity, bid, original readiness height and sequence.
+func TestSnapshotAuctionIndexValidationAndRestart(t *testing.T) {
+	h := newFaultHarness(t)
+	h.k.Config.MaxVisits = 1
+	require.NoError(t, h.k.InitState(h.ctx))
+	h.start(t, 80_000_000, 100)
+	h.start(t, 80_000_000, 100)
+	first := h.task(t, 1)
+	require.Equal(t, []byte("due/00000000000000000011/00000000000000000001"), first.QueueKey)
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	for name, corrupt := range map[string]func(sdk.Context){
+		"missing_due":  func(ctx sdk.Context) { h.k.store(ctx).Delete(first.QueueKey) },
+		"due_height":   func(ctx sdk.Context) { v := first; v.ReadyAt++; h.k.save(ctx, v) },
+		"due_sequence": func(ctx sdk.Context) { v := first; v.ReadySequence++; h.k.save(ctx, v) },
+		"wrong_task":   func(ctx sdk.Context) { h.k.store(ctx).Set(first.QueueKey, taskKey(first.Owner, 2)) },
+		"noncanonical_due": func(ctx sdk.Context) {
+			v := first
+			h.k.store(ctx).Delete(v.QueueKey)
+			v.QueueKey = []byte("due/11/1")
+			h.k.store(ctx).Set(v.QueueKey, taskKey(v.Owner, v.ID))
+			h.k.save(ctx, v)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := h.ctx.CacheContext()
+			corrupt(ctx)
+			require.Error(t, h.k.ValidateState(ctx))
+		})
+	}
+	h.block(11)
+	second := h.task(t, 2)
+	require.True(t, bytes.HasPrefix(second.QueueKey, []byte("bid/")))
+	require.Equal(t, uint64(11), second.ReadyAt)
+	require.Equal(t, uint64(2), second.ReadySequence)
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	for name, corrupt := range map[string]func(sdk.Context){
+		"missing_bid":  func(ctx sdk.Context) { h.k.store(ctx).Delete(second.QueueKey) },
+		"bid_value":    func(ctx sdk.Context) { h.k.store(ctx).Set(second.QueueKey, taskKey(second.Owner, 1)) },
+		"bid_price":    func(ctx sdk.Context) { v := second; v.MaxGasPrice = "2"; h.k.save(ctx, v) },
+		"bid_height":   func(ctx sdk.Context) { v := second; v.ReadyAt++; h.k.save(ctx, v) },
+		"bid_sequence": func(ctx sdk.Context) { v := second; v.ReadySequence++; h.k.save(ctx, v) },
+		"noncanonical_bid": func(ctx sdk.Context) {
+			v := second
+			h.k.store(ctx).Delete(v.QueueKey)
+			v.QueueKey = append([]byte("bid/"), bytes.ToUpper(v.QueueKey[4:])...)
+			h.k.store(ctx).Set(v.QueueKey, taskKey(v.Owner, v.ID))
+			h.k.save(ctx, v)
+		},
+		"stale_bid": func(ctx sdk.Context) {
+			h.k.store(ctx).Set([]byte("bid/00000000000000000000000000000000/00000000000000000011/00000000000000000099"), taskKey(second.Owner, 2))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, _ := h.ctx.CacheContext()
+			corrupt(ctx)
+			require.Error(t, h.k.ValidateState(ctx))
+		})
+	}
+	before := policySnapshot(h.ctx, h.k)
+	h.k = &Keeper{Key: h.k.Key, Config: h.k.Config, Bank: h.k.Bank, Wasm: h.k.Wasm, messenger: h.k.messenger}
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	require.Equal(t, before, policySnapshot(h.ctx, h.k))
+	h.block(12)
+	require.Equal(t, uint64(12), h.task(t, 2).LastPoll)
+	require.NoError(t, h.k.ValidateState(h.ctx))
 }
 
 // Catches broken task/index/counter/escrow state without making restore execute tasks.

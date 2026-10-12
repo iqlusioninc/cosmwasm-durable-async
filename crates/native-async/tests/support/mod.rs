@@ -187,6 +187,10 @@ impl Suite {
                     config: FundingConfig {
                         denom: "ugas".into(),
                         gas_price: Decimal::percent(10),
+                        min_base_price: Decimal::percent(10),
+                        target_gas: 0,
+                        price_grace_blocks: 0,
+                        last_block_poll_gas_used: 0,
                         max_gas_per_poll: 1_000,
                         max_lifetime_blocks: 100,
                     },
