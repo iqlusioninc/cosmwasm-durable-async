@@ -42,6 +42,347 @@ fn poll_log(s: &dyn Storage) -> Vec<(String, u64)> {
         .unwrap_or_default()
 }
 
+fn set_base(s: &mut dyn Storage, price: &str) {
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&price.parse::<Decimal>().unwrap()).unwrap(),
+    );
+}
+
+#[test]
+fn priced_out_task_pauses_only_after_grace() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    for h in 2..=5 {
+        set_base(&mut s, "2");
+        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        assert_eq!(report.price_pauses, u32::from(h == 5));
+        assert_eq!(
+            rt.task(&s, &c, id, h).unwrap().status,
+            if h == 5 {
+                ExecutionStatus::Paused
+            } else {
+                ExecutionStatus::Runnable
+            }
+        );
+    }
+    assert_eq!(
+        funding(&rt, &api, &s, &c, id).status,
+        TaskStatus::Paused {
+            reason: PauseReason::PriceLimit,
+            resume: ResumeState::Runnable
+        }
+    );
+    assert_eq!(
+        s.range(
+            Some(b"na2/bid/"),
+            Some(b"na2/bid0"),
+            cosmwasm_std::Order::Ascending
+        )
+        .count(),
+        0
+    );
+}
+
+#[test]
+fn full_block_wait_never_price_pauses() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.block_gas = 40;
+    host.gas = 38;
+    let high = register(&rt, &api, &mut s, &c, &mut host);
+    set_bid(&rt, &api, &mut s, &c, &mut host, high, 40, "10");
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "5");
+    host.outcome = PollOutcome::Yield {
+        state: Binary::default(),
+    };
+    for h in 2..=12 {
+        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        assert_eq!(report.price_pauses, 0);
+        assert_eq!(report.polls, 1);
+        assert!(report.base_price <= "5".parse::<Decimal>().unwrap());
+    }
+    assert_eq!(
+        rt.task(&s, &c, id, 12).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    assert_eq!(poll_log(&s), vec![(c.to_string(), high); 11]);
+}
+
+#[test]
+fn price_pause_survives_price_drop_until_resume_and_keeps_inbox() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.outcome = PollOutcome::Pending {
+        state: Binary::from(b"saved".as_slice()),
+        wait: Wait::Operation {
+            resolver: "service".into(),
+            deadline: 18,
+            max_result_bytes: 20,
+        },
+    };
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let resolution = Resolution::Success {
+        data: Binary::from(b"reply".as_slice()),
+    };
+    rt.deliver(&mut s, 3, &c, id, 1, "service", resolution.clone(), false)
+        .unwrap();
+    rt.config.max_visits = 0;
+    for h in 3..=6 {
+        set_base(&mut s, "2");
+        rt.run_block(&mut s, h, &mut host).unwrap();
+    }
+    assert_eq!(
+        rt.task(&s, &c, id, 6).unwrap().status,
+        ExecutionStatus::Paused
+    );
+    set_base(&mut s, "1");
+    rt.run_block(&mut s, 7, &mut host).unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 7).unwrap().inbox,
+        Some(resolution.clone())
+    );
+    assert_eq!(
+        rt.task(&s, &c, id, 7).unwrap().status,
+        ExecutionStatus::Paused
+    );
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "2");
+    rt.manage(
+        &api,
+        &mut s,
+        7,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 7).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    assert_eq!(rt.task(&s, &c, id, 7).unwrap().inbox, Some(resolution));
+}
+
+#[test]
+fn lowered_bid_grace_counts_from_last_readiness_not_update() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "3");
+    set_base(&mut s, "2");
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "1");
+    set_base(&mut s, "2");
+    rt.run_block(&mut s, 5, &mut host).unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 5).unwrap().status,
+        ExecutionStatus::Paused
+    );
+}
+
+#[test]
+fn registration_rejects_bid_below_floor_admits_below_base() {
+    let (rt, api, mut s, c, mut host) = setup();
+    set_base(&mut s, "2");
+    let bad = rt.register(
+        &api,
+        &mut s,
+        1,
+        &c,
+        SchedulerMsg::RegisterTask {
+            control: c.to_string(),
+            refund: c.to_string(),
+            gas_per_poll: 40,
+            max_gas_price: "0.5".parse().unwrap(),
+            expires_at: 20,
+            funds: Coin::new(1000u128, "ugas"),
+        },
+        TaskProgram {
+            kind: "test".into(),
+            version: 1,
+            input: Binary::default(),
+        },
+        4096,
+        &mut host,
+    );
+    assert!(bad.is_err());
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    assert_eq!(id, 1);
+    assert_eq!(funding(&rt, &api, &s, &c, id).status, TaskStatus::Runnable);
+    let stored: TaskFunding = cosmwasm_std::from_json(
+        s.get(
+            &[
+                b"native-async/v1/task/".as_slice(),
+                c.as_bytes(),
+                b"/",
+                &id.to_be_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored.max_attempt_charge, Uint128::new(80));
+}
+
+#[test]
+fn price_walk_cap_counts_younger_skipped_entries() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    rt.config.max_price_pauses = 1;
+    let old = register(&rt, &api, &mut s, &c, &mut host);
+    set_bid(&rt, &api, &mut s, &c, &mut host, old, 40, "2");
+    set_base(&mut s, "4");
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    let young = rt
+        .register(
+            &api,
+            &mut s,
+            4,
+            &c,
+            SchedulerMsg::RegisterTask {
+                control: c.to_string(),
+                refund: c.to_string(),
+                gas_per_poll: 40,
+                max_gas_price: Decimal::one(),
+                expires_at: 20,
+                funds: Coin::new(1000u128, "ugas"),
+            },
+            TaskProgram {
+                kind: "test".into(),
+                version: 1,
+                input: Binary::default(),
+            },
+            4096,
+            &mut host,
+        )
+        .unwrap();
+    set_base(&mut s, "4");
+    let report = rt.run_block(&mut s, 5, &mut host).unwrap();
+    assert_eq!(report.price_pauses, 0);
+    assert_eq!(
+        rt.task(&s, &c, old, 5).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    assert_eq!(
+        rt.task(&s, &c, young, 5).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    rt.config.max_price_pauses = 2;
+    set_base(&mut s, "4");
+    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().price_pauses, 1);
+    assert_eq!(
+        rt.task(&s, &c, old, 6).unwrap().status,
+        ExecutionStatus::Paused
+    );
+}
+
+#[test]
+fn price_walk_obeys_shared_maintenance_gas() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    set_base(&mut s, "2");
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.config.maintenance_gas = 3;
+    set_base(&mut s, "2");
+    let report = rt.run_block(&mut s, 5, &mut host).unwrap();
+    assert_eq!(report.maintenance_gas_used, 3);
+    assert_eq!(report.price_pauses, 0);
+    assert_eq!(
+        rt.task(&s, &c, id, 5).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    rt.config.maintenance_gas = 4;
+    set_base(&mut s, "2");
+    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().price_pauses, 1);
+}
+
+#[test]
+fn expiry_precedes_price_pause_even_when_expiry_maintenance_is_exhausted() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    rt.config.max_expirations = 0;
+    let id = rt
+        .register(
+            &api,
+            &mut s,
+            1,
+            &c,
+            SchedulerMsg::RegisterTask {
+                control: c.to_string(),
+                refund: c.to_string(),
+                gas_per_poll: 40,
+                max_gas_price: Decimal::one(),
+                expires_at: 5,
+                funds: Coin::new(1000u128, "ugas"),
+            },
+            TaskProgram {
+                kind: "test".into(),
+                version: 1,
+                input: Binary::default(),
+            },
+            4096,
+            &mut host,
+        )
+        .unwrap();
+    set_base(&mut s, "2");
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    set_base(&mut s, "2");
+    assert_eq!(rt.run_block(&mut s, 5, &mut host).unwrap().price_pauses, 0);
+    assert_eq!(
+        rt.task(&s, &c, id, 5).unwrap().status,
+        ExecutionStatus::Expired
+    );
+    rt.config.max_expirations = 1;
+    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().expirations, 1);
+}
+
+#[test]
+fn resume_requires_bid_at_or_above_base_price() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    rt.config.max_visits = 0;
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    for h in 2..=5 {
+        set_base(&mut s, "2");
+        rt.run_block(&mut s, h, &mut host).unwrap();
+    }
+    assert!(rt
+        .manage(
+            &api,
+            &mut s,
+            5,
+            &c,
+            SchedulerMsg::ResumeTask {
+                task_id: id,
+                actor: c.to_string()
+            },
+            &mut host
+        )
+        .is_err());
+    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "2");
+    rt.manage(
+        &api,
+        &mut s,
+        5,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.task(&s, &c, id, 5).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+}
+
 #[test]
 fn highest_bid_polls_first_and_equal_bids_are_fifo() {
     let (mut rt, api, mut s, c, mut host) = setup();

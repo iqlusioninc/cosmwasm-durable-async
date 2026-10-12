@@ -115,6 +115,7 @@ pub struct BlockReport {
     pub polls: u32,
     pub visits: u32,
     pub promotions: u32,
+    pub price_pauses: u32,
     pub expirations: u32,
     pub prunes: u32,
     pub gas_used: u64,
@@ -566,12 +567,16 @@ impl Runtime {
         let SchedulerMsg::RegisterTask {
             expires_at,
             gas_per_poll,
+            max_gas_price,
             funds: deposit,
             ..
         } = &funding
         else {
             return Err(err("registration funding required"));
         };
+        if *max_gas_price < self.keeper.config.gas_price {
+            return Err(err("bid below minimum base price"));
+        }
         if allocated_bytes == 0
             || self.config.host_gas == 0
             || self.config.maintenance_gas_per_item == 0
@@ -1097,6 +1102,43 @@ impl Runtime {
             }
             save(s, &t)?;
             report.promotions += 1;
+        }
+        // The reverse walk inspects at most max_price_pauses entries, including
+        // younger tasks it skips. Each inspection shares the maintenance meter.
+        let mut price_cursor = b"na2/bid0".to_vec();
+        for _ in 0..self.config.max_price_pauses {
+            if !self.maintenance(&mut report) {
+                break;
+            }
+            let Some((key, value)) = s
+                .range(Some(b"na2/bid/"), Some(&price_cursor), Order::Descending)
+                .next()
+            else {
+                break;
+            };
+            price_cursor = key.clone(); // exclusive upper bound; iterator closed before writes
+            let r: Reference = cosmwasm_std::from_json(value)?;
+            let mut t = load(s, &r.contract, r.id)?;
+            let addr = Addr::unchecked(&r.contract);
+            let mut f = host::load(s, &addr, r.id)?;
+            if f.max_gas_price >= base_price {
+                break;
+            }
+            if h >= t.expires_at
+                || h.saturating_sub(t.ready_at.max(t.last_attempt.unwrap_or(0)))
+                    < self.config.price_grace_blocks
+            {
+                continue;
+            }
+            unqueue(s, &mut t);
+            t.status = ExecutionStatus::Paused;
+            f.status = TaskStatus::Paused {
+                reason: PauseReason::PriceLimit,
+                resume: ResumeState::Runnable,
+            };
+            save(s, &t)?;
+            host::save(s, &addr, &f)?;
+            report.price_pauses += 1;
         }
         // A single lexical cursor and visit counter cover the entire block.
         // Oversized entries remain persisted but cannot be revisited this block.
