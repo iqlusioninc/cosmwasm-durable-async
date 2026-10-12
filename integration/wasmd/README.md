@@ -105,10 +105,15 @@ BeginBlock work against this partition.
 
 ## State and reference-model mapping
 
-- Global monotonic task ID, per-contract readiness index, persistent contract
-  rotation, timer/expiry/prune indexes; each queue/maintenance visit is bounded.
-- Registration and scheduler-generated wakes are H+1; ordinary callbacks may
-  wake at H. Deadlines are checked directly, and accepted inboxes survive their
+- Global monotonic task ID, global due/bid indexes and timer/expiry/prune indexes;
+  each queue/maintenance visit is bounded. Highest bids run first, then original
+  ready height and global FIFO sequence. Due and timer promotion preserve that
+  metadata. Tasks too large for the remaining budget retain priority while
+  smaller tasks may run; strict bid priority gives no general starvation-freedom
+  guarantee.
+- Registration, yields and scheduler-generated callbacks are H+1; ordinary
+  callbacks may wake at H and host timers are eligible at requested height H.
+  Deadlines are checked directly, and accepted inboxes survive their
   deadline. Task expiry dominates all execution and callbacks.
 - Success commits continuation, inbox consumption, Wasm writes and outbound
   messages together. Guest errors, OOG, invalid responses and message errors roll
@@ -119,7 +124,7 @@ BeginBlock work against this partition.
 - Metadata slack, bounded errors, U128 balance limits, and an admission bound on
   failure-recording gas prevent user-selected continuation sizes from removing
   the mandatory accounting allowance. Maintenance OOG discards only its current
-  visit. Empty contract queue entries are removed promptly.
+  visit. Terminal transitions remove their scheduler index entries.
 - All shared JSON fixtures decode into concrete Go production ABI types.
 - Public Task queries project the shared Rust `TaskResponse` DTO, including
   structured paused status and explicit nullable fields. Internal queue keys,
@@ -134,6 +139,35 @@ message bytes. Inbox storage separately reserves `6 * max_result_bytes + 128`
 for worst-case JSON escaping. `testdata/result-boundaries.json` is shared with
 the Rust boundary test. Go additionally reserves task metadata and indexes.
 
+## Congestion pricing
+
+The [auction spec](../../docs/superpowers/specs/2026-10-11-async-gas-price-auction-design.md)
+defines a live consensus base price, frozen throughout each EndBlock. All
+eligibility, reservation and fee decisions use that price. Execution utilization
+targets `(AsyncGas - MaintenanceGas) / 2`; host accounting and maintenance are
+excluded from utilization, while fees retain their existing charged host gas.
+After scheduling, price adjusts with denominator 8 by default (at most 12.5%
+per block), and idle blocks decay to `MinBasePrice`. A zero floor is valid.
+
+Tasks below base price wait until the bounded price-maintenance walk pauses them
+with `price_limit`, retaining continuation and inbox. `PriceGraceBlocks` is a
+minimum age since `max(ready height, last poll)`, not a guaranteed pause deadline
+under bounded maintenance. Registration requires a bid at least the floor and
+lease plus one attempt funded at the live price. Deposits, budget updates and
+price decay do not resume paused tasks: explicit controller resume requires a
+bid at least the live price and enough escrow for one attempt. A reservation
+above Uint128 pauses as `insufficient_funds` without execution or charges;
+queries for an unrepresentable `max_attempt_charge` return an error.
+
+`FundingConfig.gas_price` is the live price; `min_base_price`, `target_gas`,
+`price_grace_blocks` and `last_block_poll_gas_used` expose policy and utilization.
+`TaskFunding.max_attempt_charge` uses the live price. Each block emits
+`async_base_price` with `old`, `new`, `used` and `target`; `async_poll.price` is
+the frozen price. Go reserves a mandatory 100,000 gas for price finalization
+**inside** `MaintenanceGas`; configuration below that minimum is rejected.
+Discretionary maintenance cannot consume this reserve. The Rust executable
+`Runtime` follows the auction; its legacy funding-only `Keeper` remains fixed-price.
+
 ## Evidence and remaining acceptance work
 
 The default suite executes the generated Rust contract and two real Wasm service
@@ -141,11 +175,20 @@ instances: registration, automatic next-block start, two authenticated callbacks
 completion, and refund. It also executes a real outbound-message failure and
 checks rollback, charged fees and durable keeper reconstruction. Other tests
 cover typed ABI fixtures, proposal partition/overflow with no-op handlers,
-maintenance OOG atomicity, persistent round-robin ordering, in-flight control
+maintenance OOG atomicity, persistent bid/FIFO ordering, in-flight control
 rejection, and topup conservation on successful/failed dispatch. Canonical pause
 reasons are separate from bounded diagnostic messages. The upstream-tagged suite
 checks actual app construction, EndBlock invocation, module meter isolation and
 the patched real keeper migration rejection.
+
+`TestCongestionRaisesPriceAndPausesLowBidder` runs the patched app with the real
+fulfill contract as a low bidder and existing fault Wasm high bidders. Explicit
+retries of OOG polls retain their accepted inboxes and burn 90m execution gas
+above the 80m target across several blocks, using a valid test-only 160m poll cap
+and the unchanged 70m host reserve. It checks rising prices, grace pause,
+cancellation-driven decay to the floor and explicit resume. This establishes
+real metered fault congestion, not sustained successful-work performance;
+unmodified fulfill fails its outbound call too early to sustain this load.
 
 Additional acceptance uses signed ABCI transactions, disk close/reopen and
 deterministic replay. Real callback storage panics through Sudo, nested Execute,
@@ -179,10 +222,12 @@ exhaustive failure and overload coverage, and production calibration remain foll
 
 The mounted native scheduler store travels in the SDK's authenticated IAVL
 snapshot alongside bank and contract state. A genesis-only manifest commits the
-native schema and scheduler configuration. Restore and ordinary startup reject
-missing or incompatible manifests rather than inventing them for existing data.
-This changes genesis state: pre-manifest experimental databases need an explicit
-upgrade, or a fresh experimental chain; they are not silently migrated.
+native schema and scheduler configuration. Schema version 2 commits the due/bid
+indexes, timer readiness metadata and live price keys. Older snapshots and
+removed contract-queue keys are rejected; no migration is provided. Restore and
+ordinary startup reject missing or incompatible manifests rather than inventing
+them for existing data.
+Use a fresh experimental chain for older databases; they are not silently migrated.
 
 The Wasm snapshot extension verifies bounded decompressed Wasm size, code checksums,
 membership, uniqueness and completeness before activation. Raw Wasm is restored

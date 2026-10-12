@@ -1,8 +1,9 @@
 # Async gas price auction design
 
-Status: proposed. Amends "Gas, escrow, and storage economics" in
+Status: implemented in the Rust reference runtime and experimental wasmd adapter;
+not production activated. Amends "Gas, escrow, and storage economics" in
 [2026-10-11-native-cosmwasm-async-design.md](2026-10-11-native-cosmwasm-async-design.md),
-which fixes a single consensus-defined async gas price.
+which originally fixed a single consensus-defined async gas price.
 
 ## Goal
 
@@ -105,7 +106,8 @@ Selection each block:
 3. Skip a task whose `gas_per_poll` exceeds the remaining poll budget and try
    the next. Skipped tasks stay at the front, so the next block (with a full
    budget) reaches them first. Every valid `gas_per_poll` fits an empty
-   budget, so a large high bid cannot starve.
+   budget. This avoids starvation caused solely by fitting smaller tasks into a
+   block remainder; sustained higher-bid arrivals can still starve lower bids.
 4. A task already polled this block moves to the due index at `h + 1`.
 5. The existing `insufficient_funds` check uses `gas_per_poll × base_price`.
 

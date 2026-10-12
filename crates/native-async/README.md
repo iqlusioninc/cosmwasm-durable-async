@@ -21,9 +21,9 @@ The private sudo ABI is `TaskSudoMsg::PollTask(PollRequest)`. Contract sudo retu
 
 With `host` enabled, `runtime::Runtime` provides:
 
-- Persistent height indexes for readiness, expiry, and pruning; FIFO task queues per contract and a persistent contract round-robin ring. No sleeping-task scan is used. A gas-deferred head retains priority in the next block; the implementation conservatively stops dispatch for the remainder of the current block.
+- Persistent due, bid, timer, expiry and pruning indexes. Runnable tasks sort by highest `max_gas_price`, then original ready height and global FIFO sequence. Due promotion and timer maintenance preserve that metadata. No sleeping-task scan is used. A task too large for the remaining poll budget retains its priority while smaller tasks may run; it fits a fresh block's budget, but strict bid priority does not guarantee service under arbitrary higher-bid arrivals.
 - Independent visit, promotion, expiration, and pruning limits plus a separately reserved maintenance gas allocation. The application must partition ordinary transaction gas, async `block_gas`, and `maintenance_gas` before transaction admission.
-- At most one attempt per task/block. Registration, yields, and scheduler-produced callbacks become eligible at H+1. Ordinary callbacks to existing tasks can run at H.
+- At most one attempt per task/block. Registration, yields, and scheduler-produced callbacks become eligible at H+1. Ordinary callbacks to existing tasks can run at H; host timers are eligible at their requested height H, subject to bounded maintenance.
 - Exact operation deadlines, authenticated bounded durable inboxes, preserved accepted outcomes after deadline, and logical expiry on access even when cleanup is delayed.
 - Full attempt escrow reservation before guest dispatch, actual trusted host-meter settlement, unused reservation release, and fees that survive guest rollback. `PollHost` returns metered task failures separately from node errors; node errors abort the whole block cache.
 - Child storage caches for guest writes, scheduler state, bank effects, and outbound calls. Trap, out-of-gas, invalid outcome, and failed messages restore the prior continuation/inbox. Application Fail commits prior writes and becomes terminal.
@@ -32,7 +32,15 @@ With `host` enabled, `runtime::Runtime` provides:
 
 `PollHost` is an explicit trusted adapter contract: all user/bank effects must use the supplied transactional storage; gas must come from the host meter; checksum must come from the actual contract; callbacks must pass the actual scheduler phase. A no-op transfer or process-local user side effect is not a valid adapter. Route **all** management of executable records through `Runtime`, rather than bypassing it with the legacy funding-only `Keeper`.
 
-Byte allocation reserves maximum-width mutable accounting/counters, the largest lifecycle/pause and queue-key encodings, a bounded 1024-byte index allowance, and worst-case escaped JSON inbox capacity. Top-ups, resume, and policy updates recheck voluntary changes inside their transaction cache; mandatory fee settlement and pause recording use prepaid metadata headroom and cannot fail a quota check. Empty contract ring/membership records are removed during terminal cleanup before storage allocation can be released. The configured host/maintenance gas costs and allocation allowance are reference policy parameters, not production calibration. Migration remains conservatively blocked until expired records have completed their bounded terminal transition.
+Byte allocation reserves maximum-width mutable accounting/counters, the largest lifecycle/pause and queue-key encodings, a bounded 1024-byte index allowance, and worst-case escaped JSON inbox capacity. Top-ups, resume, and policy updates recheck voluntary changes inside their transaction cache; mandatory fee settlement and pause recording use prepaid metadata headroom and cannot fail a quota check. Terminal cleanup removes scheduler index entries before storage allocation can be released. The configured host/maintenance gas costs and allocation allowance are reference policy parameters, not production calibration. Migration remains conservatively blocked until expired records have completed their bounded terminal transition.
+
+## Congestion pricing
+
+The executable `Runtime` uses the [async gas price auction](../../docs/superpowers/specs/2026-10-11-async-gas-price-auction-design.md). It freezes the live base price for all eligibility checks, reservations and charges in a block, then adjusts it toward a target of half `RuntimeConfig.block_gas`, with denominator 8 by default (at most 12.5% per block). Idle blocks decay toward `min_base_price`; a zero floor is valid. Utilization counts execution gas only, excluding host accounting and maintenance. Attempt fees still include the existing charged host gas and are ceiling-rounded at that block's base price.
+
+Below-base bids wait, then maintenance pauses them with `price_limit` once `height - max(ready_height, last_poll) >= price_grace_blocks`. This is a minimum age, not a guaranteed pause deadline: maintenance visits and gas are bounded. The continuation and inbox survive. Deposits, budget changes and falling prices never resume a task; the controller must explicitly resume with a bid at least the live price and escrow for one attempt. Registration accepts a bid at least the floor, even below the live price, but requires the lease plus one attempt funded at the live price.
+
+`FundingConfig.gas_price` reports the live base price and adds `min_base_price`, `target_gas`, `price_grace_blocks` and `last_block_poll_gas_used`. `TaskFunding.max_attempt_charge` also uses the live price. Quotes that exceed the shared Uint128 coin range return an error; dispatch treats an unrepresentable reservation as unaffordable and pauses with `insufficient_funds` without polling or charging. `BlockReport` exposes `base_price`, `next_base_price` and execution-only `poll_gas_used`. The legacy funding-only `Keeper` retains its fixed-price `FundingConfig.gas_price` policy; it does not run this auction.
 
 ## Contract wiring
 
@@ -70,7 +78,7 @@ The host debits the owning contract's actual balance, so a JSON amount cannot mi
 
 Deposits do not resume tasks or change refund ownership. Contributors fund the existing budget; unused execution funds go to the recorded refund address on termination. Funding transactions pay their ordinary transaction fee separately. Cancellation is allowed after logical expiry to reclaim funds before bounded automatic cleanup. Top-ups and resumption are rejected at the exact expiry height.
 
-Configuration's fee denomination and custody account must remain fixed for the lifetime of these records. Gas price can change under host policy; funding queries recalculate the maximum attempt charge and resume checks the task's price cap. `gas_per_poll` denotes the total metered attempt allocation, including configured host overhead.
+Configuration's fee denomination and custody account must remain fixed for the lifetime of these records. Runtime funding queries recalculate the maximum attempt charge at the live base price and resume checks the task's price cap. `gas_per_poll` denotes the total metered attempt allocation, including configured host overhead.
 
 ## Validation and remaining runtime work
 
@@ -83,7 +91,7 @@ cargo build -p native-async --target wasm32-unknown-unknown --locked
 
 The default feature set contains only wire types and contract helpers. Enable `host` to run the funding integration tests. cw-multi-test verifies transactional behavior in simulation; it does not establish real VM gas use, block latency, or chain deployment compatibility.
 
-Reference tests exercise the storage-backed scheduler, bank adapter, immediate callbacks, rollback, exact boundaries, fairness, and lifecycle accounting. They do not establish real Wasm VM gas conversion, cold/warm validator equivalence, state sync, sustained overload progress, or production storage/gas calibration. Those require pinned chain integration and application-level evidence. Multiple simultaneous subscriptions and reserved per-block service remain outside this version.
+Reference tests exercise the storage-backed scheduler, bank adapter, immediate callbacks, rollback, exact boundaries, bid/FIFO ordering, and lifecycle accounting. They do not establish real Wasm VM gas conversion, cold/warm validator equivalence, state sync, sustained overload progress, or production storage/gas calibration. Those require pinned chain integration and application-level evidence. Multiple simultaneous subscriptions and reserved per-block service remain outside this version.
 
 ## Controlled lease and budget management
 

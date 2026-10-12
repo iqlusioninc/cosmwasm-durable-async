@@ -117,15 +117,15 @@ Registration atomically reserves funding and storage, creates the task, and make
 
 ## Block scheduling and fairness
 
-At height H, the scheduler consumes a deterministic snapshot of eligible work after ordinary transactions. Tasks registered at H and wakeups produced by scheduler executions at H are eligible at H+1. A task that existed before H and receives an ordinary-transaction result at H may run in the scheduler phase at H. Each task receives at most one poll per block.
+At height H, the scheduler consumes a deterministic snapshot of eligible work after ordinary transactions. Tasks registered at H, yields and callbacks produced by scheduler executions at H are eligible at H+1. Host timers are eligible at their requested height H, subject to bounded maintenance. A task that existed before H and receives an ordinary-transaction result at H may run in the scheduler phase at H. Each task receives at most one poll per block.
 
 The application must reserve the async allocation before admitting ordinary transaction gas. Async work cannot simply run beyond the chain's configured execution budget. A proposal is rejected if its ordinary transaction allocation violates that partition. Chains also need limits for bytes and storage work, since gas calibration alone is not proof of safe block latency.
 
-The initial selection algorithm is persistent round-robin across ready contracts and FIFO by readiness sequence within each contract. It provides deterministic service rotation, not Sybil resistance: multiple contract addresses can obtain multiple positions. Fees, per-contract limits, and chain-wide admission limits bound that exposure.
+Selection follows the [async gas price auction](2026-10-11-async-gas-price-auction-design.md): global bid priority, then original ready height and FIFO sequence for equal bids. Due and timer promotion retain that metadata. Fees, per-contract limits and chain-wide admission limits bound exposure; strict bid priority provides no general starvation-freedom guarantee under sustained higher-bid arrivals.
 
-Before dispatch, the scheduler reserves the task's entire per-poll gas cap plus bounded host overhead from the remaining async block allocation. Unused execution gas returns to the allocation after the poll. A task that does not fit is deferred; a persistent cursor ensures smaller tasks cannot indefinitely move ahead of a deferred large task at the next fresh block. Registration rejects caps larger than the maximum task slice.
+Before dispatch, the scheduler reserves the task's entire per-poll gas cap, including bounded host overhead, from the remaining async block allocation. Unused execution gas returns to the allocation after the poll. A task that does not fit is skipped while smaller tasks may run; it retains its ordering at the next fresh block. Registration rejects caps larger than the maximum task slice. This capacity rule does not override higher bids.
 
-Queue visits, due-timer promotion, expiration transitions, and pruning have independent work caps and a host maintenance allocation. A bounded number of ineligible tasks can be inspected per block. Unfunded or price-blocked tasks leave the hot queue; a management transaction explicitly reactivates them. Global gas-price changes do not trigger a full task scan.
+Queue visits, due-timer promotion, expiration transitions, and pruning have work caps and a host maintenance allocation. A bounded number of ineligible tasks can be inspected per block. Unfunded tasks pause; price-blocked tasks wait, then pause with `price_limit` once their grace age is reached. The bounded price-maintenance walk can pause them later, never earlier. A management transaction explicitly resumes paused tasks; price decay and deposits do not reactivate them. Global gas-price changes do not trigger a full task scan.
 
 The implementation must prove progress under a stable admitted workload and test overload behavior. Best effort provides no fixed completion deadline under arbitrary sustained arrivals.
 
@@ -155,7 +155,7 @@ Task expiry is separate: no poll is allowed at or after the task's expiry height
 
 ## Gas, escrow, and storage economics
 
-The initial deployment uses one chain-configured fee denomination and a consensus-defined async gas price. Validator-local minimum transaction gas prices are not used for scheduler decisions. Gas-price updates take effect at an explicit block boundary and obey each task's maximum price.
+The [async gas price auction](2026-10-11-async-gas-price-auction-design.md) amends this policy: one chain-configured fee denomination and a live consensus base price frozen for each block, adjusted after scheduling toward half the poll budget and bounded by a configurable floor (including zero). Validator-local minimum transaction gas prices are not used for scheduler decisions. Every poll obeys its task's bid. Pricing utilization excludes host accounting and maintenance; attempt fees retain their existing charged host gas.
 
 All task limits and fees are expressed in SDK gas units. VM gas is converted through the selected chain's explicit conversion rule. Components already charged by the VM or SDK must not be charged twice.
 
@@ -171,7 +171,7 @@ Before running a task, the host reserves enough escrow to cover the maximum atte
 
 The first storage policy is a prepaid finite lease on an allocated byte quota, rather than a scan charging every task each block. Registration pays for `allocated bytes × lease blocks`, plus a bounded cleanup charge. The allocation covers continuation, inbox, subscriptions, and retained result metadata. Growth or extension prepays the additional allocation before it becomes usable. Early termination refunds unused execution escrow but not the prepaid storage lease. Per-task and global storage ceilings remain mandatory even for fully funded tasks.
 
-Maintenance overhead is covered by registration, lease, and cleanup charges and bounded separately in block gas. Spam that never enters Wasm must still incur fees and admission limits. Economic coefficients are deployment parameters calibrated from measured execution and storage costs; this document deliberately does not invent production prices.
+Maintenance overhead is covered by registration, lease, and cleanup charges and bounded separately in block gas. The Go adapter reserves 100,000 mandatory finalization gas inside its maintenance allocation for the base-price update. Spam that never enters Wasm must still incur fees and admission limits. Economic coefficients are deployment parameters calibrated from measured execution and storage costs; this document deliberately does not invent production prices.
 
 Any account may top up a task through the contract's standard funding interface without gaining control or changing its refund address. Budget changes, resumption, cancellation, and refund-address changes require the recorded control authority. Task funds are segregated from ordinary contract balances, and contract execution cannot withdraw another task's reserve.
 
@@ -194,7 +194,7 @@ enum AsyncQueryMsg {
 }
 ```
 
-`FundingConfig` reports the accepted denomination, current async gas price, and funding policy. `TaskFunding` reports available execution escrow, any reserved amount, cumulative execution fees, the current maximum attempt charge, storage allocation and lease expiry, refund address, and pause reason. A balance is not a guarantee that the task can finish: future polls, prices, and external outcomes may differ.
+`FundingConfig` reports the accepted denomination, live base price as `gas_price`, and funding policy, including `min_base_price`, `target_gas`, `price_grace_blocks` and `last_block_poll_gas_used`. `TaskFunding` reports available execution escrow, any reserved amount, cumulative execution fees, the current maximum attempt charge at the live price, storage allocation and lease expiry, refund address, and pause reason. A quote above Uint128 returns an error; an unrepresentable dispatch reservation pauses as unaffordable without polling or charging. A balance is not a guarantee that the task can finish: future polls, prices, and external outcomes may differ.
 
 `FundTask` forwards the attached coins through a scheduler funding message authenticated by the runtime as originating from the owning contract. The target is implicitly `(executing contract address, task_id)`; a payload cannot select another owning contract. The keeper validates the task and denomination, transfers the coins into scheduler custody, and credits the task ledger atomically with the execute transaction. A failure rolls back the deposit and ledger credit together. Funding emits a receipt event containing the contract, task ID, contributor, amount, and resulting escrow balance.
 
