@@ -20,10 +20,25 @@ fn set_bid(
     gas: u64,
     bid: &str,
 ) {
+    set_bid_at(rt, api, s, c, host, 1, id, gas, bid);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn set_bid_at(
+    rt: &Runtime,
+    api: &MockApi,
+    s: &mut dyn Storage,
+    c: &Addr,
+    host: &mut TestHost,
+    height: u64,
+    id: u64,
+    gas: u64,
+    bid: &str,
+) {
     rt.execute(
         api,
         s,
-        1,
+        height,
         c,
         management(serde_json::json!({"update_budget": {
             "task_id": id, "actor": c, "gas_per_poll": gas, "max_gas_price": bid, "refund": c,
@@ -168,20 +183,41 @@ fn price_pause_survives_price_drop_until_resume_and_keeps_inbox() {
 }
 
 #[test]
-fn lowered_bid_grace_counts_from_last_readiness_not_update() {
+fn lowered_bid_grace_counts_from_last_poll() {
     let (mut rt, api, mut s, c, mut host) = setup();
-    rt.config.max_visits = 0;
     let id = register(&rt, &api, &mut s, &c, &mut host);
     set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "3");
-    set_base(&mut s, "2");
-    rt.run_block(&mut s, 2, &mut host).unwrap();
-    set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, "1");
-    set_base(&mut s, "2");
-    rt.run_block(&mut s, 5, &mut host).unwrap();
+    host.outcome = PollOutcome::Yield {
+        state: Binary::from(b"saved".as_slice()),
+    };
+    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(poll_log(&s), vec![(c.to_string(), id)]);
+    assert_eq!(rt.task(&s, &c, id, 2).unwrap().last_attempt, Some(2));
+
+    // Yield makes the task due at 3. Promote it, then leave it eligible but
+    // unpolled until the later budget update at height 5.
+    rt.config.max_visits = 0;
+    for h in 3..=4 {
+        set_base(&mut s, "2");
+        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().price_pauses, 0);
+    }
+    let before = rt.task(&s, &c, id, 4).unwrap();
+    assert_eq!(before.ready_at, 3);
+    assert_eq!(before.last_attempt, Some(2));
+    set_bid_at(&rt, &api, &mut s, &c, &mut host, 5, id, 40, "1");
+    let after = rt.task(&s, &c, id, 5).unwrap();
+    assert_eq!(after.ready_at, 3);
+    assert_eq!(after.last_attempt, Some(2));
+    for h in 5..=6 {
+        set_base(&mut s, "2");
+        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        assert_eq!(report.price_pauses, u32::from(h == 6));
+    }
     assert_eq!(
-        rt.task(&s, &c, id, 5).unwrap().status,
+        rt.task(&s, &c, id, 6).unwrap().status,
         ExecutionStatus::Paused
     );
+    assert_eq!(poll_log(&s), vec![(c.to_string(), id)]);
 }
 
 #[test]
