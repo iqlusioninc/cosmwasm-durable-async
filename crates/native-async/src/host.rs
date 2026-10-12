@@ -3,8 +3,8 @@
 //! transfer implementation. Never expose these methods as contract entry points.
 use crate::*;
 use cosmwasm_std::{
-    from_json, to_json_binary, Addr, Api, Binary, Coin, Event, StdError, StdResult, Storage,
-    Uint128,
+    from_json, to_json_binary, Addr, Api, Binary, Coin, Decimal, Event, StdError, StdResult,
+    Storage, Uint128,
 };
 
 pub struct Keeper {
@@ -257,8 +257,11 @@ impl Keeper {
         Ok(())
     }
     pub(crate) fn attempt_charge(&self, gas: u64) -> StdResult<Uint128> {
+        self.attempt_charge_at(gas, self.config.gas_price)
+    }
+    pub fn attempt_charge_at(&self, gas: u64, price: Decimal) -> StdResult<Uint128> {
         Uint128::from(gas)
-            .checked_mul_ceil(self.config.gas_price)
+            .checked_mul_ceil(price)
             .map_err(|e| error(e.to_string()))
     }
 }

@@ -5,12 +5,17 @@ use crate::{
     runtime_store::*,
     *,
 };
-use cosmwasm_std::{Addr, Api, Binary, Coin, CosmosMsg, StdError, StdResult, Storage, Uint128};
+use cosmwasm_std::{
+    Addr, Api, Binary, Coin, CosmosMsg, Decimal, StdError, StdResult, Storage, Uint128,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub block_gas: u64,
+    pub price_grace_blocks: u64,
+    pub price_adjust_denominator: u64,
+    pub max_price_pauses: u32,
     pub host_gas: u64,
     /// Separate application-reserved maintenance allocation.
     pub maintenance_gas: u64,
@@ -101,6 +106,10 @@ pub struct ExecutionTask {
 }
 #[derive(Default, Debug, PartialEq)]
 pub struct BlockReport {
+    pub base_price: Decimal,
+    pub next_base_price: Decimal,
+    /// Metered execution gas, excluding the fixed host accounting charge.
+    pub poll_gas_used: u64,
     pub polls: u32,
     pub visits: u32,
     pub promotions: u32,
@@ -222,6 +231,29 @@ fn due(s: &dyn Storage, prefix: &[u8], h: u64) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 impl Runtime {
+    pub fn base_price(&self, s: &dyn Storage) -> StdResult<Decimal> {
+        if self.config.block_gas / 2 == 0 || self.config.price_adjust_denominator == 0 {
+            return Err(err("invalid runtime price configuration"));
+        }
+        s.get(b"na2/base-price")
+            .map(cosmwasm_std::from_json)
+            .transpose()
+            .map(|price| price.unwrap_or(self.keeper.config.gas_price))
+    }
+
+    fn live_keeper(&self, s: &dyn Storage) -> StdResult<Keeper> {
+        let mut config = self.keeper.config.clone();
+        config.gas_price = self.base_price(s)?;
+        config.min_base_price = self.keeper.config.gas_price;
+        config.target_gas = self.config.block_gas / 2;
+        config.price_grace_blocks = self.config.price_grace_blocks;
+        config.last_block_poll_gas_used = number(s, b"na2/last-poll-gas")?;
+        Ok(Keeper {
+            config,
+            escrow: self.keeper.escrow.clone(),
+        })
+    }
+
     fn maintenance(&self, report: &mut BlockReport) -> bool {
         if self.config.maintenance_gas_per_item == 0
             || self.config.maintenance_gas_per_item
@@ -361,10 +393,10 @@ impl Runtime {
         msg: RuntimeQuery,
     ) -> StdResult<Binary> {
         match msg {
-            RuntimeQuery::Funding(msg) => self.keeper.query(api, s, h, msg),
+            RuntimeQuery::Funding(msg) => self.live_keeper(s)?.query(api, s, h, msg),
             RuntimeQuery::Task { contract, task_id } => {
                 let task = self.task(s, &api.addr_validate(&contract)?, task_id, h)?;
-                let funding: TaskFunding = cosmwasm_std::from_json(self.keeper.query(
+                let funding: TaskFunding = cosmwasm_std::from_json(self.live_keeper(s)?.query(
                     api,
                     s,
                     h,
@@ -407,6 +439,7 @@ impl Runtime {
             _ => return Err(err("unsupported policy update")),
         };
         let mut cache = Cache::new(s);
+        let base_price = self.base_price(&cache)?;
         let mut t = load(&cache, c.as_str(), id)?;
         let mut f = host::load(&cache, c, id)?;
         if api.addr_validate(actor)?.as_str() != f.control {
@@ -491,7 +524,7 @@ impl Runtime {
                 }
                 f.gas_per_poll = gas_per_poll;
                 f.max_gas_price = max_gas_price;
-                f.max_attempt_charge = self.keeper.attempt_charge(gas_per_poll)?;
+                f.max_attempt_charge = self.keeper.attempt_charge_at(gas_per_poll, base_price)?;
                 f.refund = refund.to_string();
             }
             _ => unreachable!(),
@@ -514,6 +547,7 @@ impl Runtime {
         allocated_bytes: u64,
         host: &mut impl PollHost,
     ) -> StdResult<u64> {
+        let base_price = self.base_price(storage)?;
         let SchedulerMsg::RegisterTask {
             expires_at,
             gas_per_poll,
@@ -575,6 +609,9 @@ impl Runtime {
         funds.available = funds.available.checked_sub(storage_fee)?;
         funds.allocated_bytes = allocated_bytes;
         funds.storage_lease_paid = storage_fee;
+        funds.max_attempt_charge = self
+            .keeper
+            .attempt_charge_at(funds.gas_per_poll, base_price)?;
         if !storage_fee.is_zero() {
             host.transfer(
                 &mut cache,
@@ -583,9 +620,7 @@ impl Runtime {
                 &Coin::new(storage_fee.u128(), &self.keeper.config.denom),
             )?;
         }
-        if funds.available < self.keeper.attempt_charge(funds.gas_per_poll)?
-            && funds.status == TaskStatus::Runnable
-        {
+        if funds.available < funds.max_attempt_charge && funds.status == TaskStatus::Runnable {
             funds.status = TaskStatus::Paused {
                 reason: PauseReason::InsufficientFunds,
                 resume: ResumeState::Runnable,
@@ -739,15 +774,14 @@ impl Runtime {
             _ => return Err(err("use executable registration")),
         };
         let mut cache = Cache::new(s);
+        let keeper = self.live_keeper(&cache)?;
         let mut t = load(&cache, c.as_str(), id)?;
         if !t.reserved.is_zero() && (resume || cancel) {
             return Err(err("cannot manage an in-flight poll"));
         }
-        let response = self
-            .keeper
-            .execute(api, &mut cache, h, c, msg, |s, f, t, c| {
-                host.transfer(s, f, t, c)
-            })?;
+        let response = keeper.execute(api, &mut cache, h, c, msg, |s, f, t, c| {
+            host.transfer(s, f, t, c)
+        })?;
         if cancel {
             self.finish(&mut cache, &mut t, ExecutionStatus::Cancelled, host)?;
         } else if resume {
@@ -969,11 +1003,16 @@ impl Runtime {
         h: u64,
         host: &mut impl PollHost,
     ) -> StdResult<BlockReport> {
+        let base_price = self.base_price(s)?;
         // One invocation per height, persisted to survive host recreation/replay.
         if s.get(b"na2/last-block").is_some() && number(s, b"na2/last-block")? >= h {
             return Ok(BlockReport::default());
         }
-        let mut report = BlockReport::default();
+        let mut report = BlockReport {
+            base_price,
+            next_base_price: base_price,
+            ..BlockReport::default()
+        };
         for _ in 0..self.config.max_expirations {
             if !self.maintenance(&mut report) {
                 break;
@@ -1071,8 +1110,8 @@ impl Runtime {
                 save(s, &t)?;
                 continue;
             }
-            let charge = self.keeper.attempt_charge(f.gas_per_poll)?;
-            let blocked = if f.max_gas_price < self.keeper.config.gas_price {
+            let charge = self.keeper.attempt_charge_at(f.gas_per_poll, base_price)?;
+            let blocked = if f.max_gas_price < base_price {
                 Some(PauseReason::PriceLimit)
             } else if f.available < charge {
                 Some(PauseReason::InsufficientFunds)
@@ -1156,7 +1195,7 @@ impl Runtime {
                 } else {
                     drop(cache);
                 }
-                let paid = self.keeper.attempt_charge(gas)?;
+                let paid = self.keeper.attempt_charge_at(gas, base_price)?;
                 f.available = f.available.checked_add(charge.checked_sub(paid)?)?;
                 f.reserved = Uint128::zero();
                 f.cumulative_execution_fees = f.cumulative_execution_fees.checked_add(paid)?;
@@ -1203,11 +1242,24 @@ impl Runtime {
                 save(s, &t)?;
                 report.polls += 1;
                 report.gas_used += gas;
+                // Poll and message execution share the task cap. Saturation
+                // above bounds even an over-reporting host to that cap, and
+                // reservation bounds the block sum without overflowing u64.
+                report.poll_gas_used += gas - self.config.host_gas;
             }
             if first(s, &ready_prefix(&c)).is_some() {
                 ring(s, &c)?;
             }
         }
+        report.next_base_price = next_base_price(
+            base_price,
+            report.poll_gas_used,
+            self.config.block_gas / 2,
+            self.keeper.config.gas_price,
+            self.config.price_adjust_denominator,
+        )?;
+        put(s, b"na2/base-price", &report.next_base_price)?;
+        put(s, b"na2/last-poll-gas", &report.poll_gas_used)?;
         put(s, b"na2/last-block", &h)?;
         Ok(report)
     }

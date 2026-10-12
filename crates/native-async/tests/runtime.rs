@@ -10,6 +10,209 @@ fn management(value: serde_json::Value) -> RuntimeMsg {
 }
 
 #[test]
+fn base_price_rises_on_full_blocks_and_decays_to_floor() {
+    let (rt, api, mut s, c, mut host) = setup();
+    for _ in 0..3 {
+        register(&rt, &api, &mut s, &c, &mut host);
+    }
+    host.gas = 35;
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.polls, 3);
+    assert_eq!(report.base_price, Decimal::one());
+    assert_eq!(report.poll_gas_used, 105);
+    assert_eq!(
+        report.next_base_price,
+        Decimal::from_ratio(175u128, 160u128)
+    );
+    assert!(report.next_base_price > report.base_price);
+    assert_eq!(rt.base_price(&s).unwrap(), report.next_base_price);
+    let idle = rt.run_block(&mut s, 3, &mut host).unwrap();
+    assert_eq!(idle.base_price, report.next_base_price);
+    assert_eq!(idle.poll_gas_used, 0);
+    assert_eq!(idle.next_base_price, Decimal::one());
+    assert_eq!(rt.base_price(&s).unwrap(), Decimal::one());
+    assert_eq!(s.get(b"na2/last-poll-gas").unwrap(), b"0");
+}
+
+#[test]
+fn polls_are_charged_at_block_base_price() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    rt.execute(
+        &api,
+        &mut s,
+        1,
+        &c,
+        management(serde_json::json!({"update_budget": {
+            "task_id": id, "actor": c, "gas_per_poll": 40,
+            "max_gas_price": "3", "refund": c,
+        }})),
+        false,
+        &mut host,
+    )
+    .unwrap();
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
+    );
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.polls, 1);
+    assert_eq!(report.base_price, Decimal::percent(200));
+    assert_eq!(report.gas_used, 9);
+    assert_eq!(report.poll_gas_used, 7); // Fixed host accounting is billed, not utilization.
+    assert_eq!(rt.task(&s, &c, id, 2).unwrap().charged, Uint128::new(18));
+    assert_eq!(s.get(b"na2/last-poll-gas").unwrap(), b"7");
+    let funding: TaskFunding = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            2,
+            RuntimeQuery::Funding(SchedulerQuery::TaskFunding {
+                contract: c.to_string(),
+                task_id: id,
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(funding.max_attempt_charge, Uint128::new(72)); // ceil(40 * 1.779166666666666667)
+}
+
+#[test]
+fn funding_config_reports_live_price() {
+    let (rt, api, mut s, _, mut host) = setup();
+    assert_eq!(rt.base_price(&s).unwrap(), Decimal::one());
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
+    );
+    s.set(b"na2/last-poll-gas", b"17");
+    let config: FundingConfig = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            2,
+            RuntimeQuery::Funding(SchedulerQuery::FundingConfig {}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config.gas_price, Decimal::percent(200));
+    assert_eq!(config.min_base_price, Decimal::one());
+    assert_eq!(config.target_gas, 60);
+    assert_eq!(config.price_grace_blocks, 3);
+    assert_eq!(config.last_block_poll_gas_used, 17);
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.next_base_price, Decimal::percent(175));
+    let replay = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(replay.polls, 0);
+    assert_eq!(rt.base_price(&s).unwrap(), Decimal::percent(175));
+}
+
+#[test]
+fn runtime_rejects_zero_price_target_and_denominator_without_writes() {
+    for (block_gas, denominator) in [(1, 8), (120, 0)] {
+        let (mut rt, _, mut s, _, mut host) = setup();
+        rt.config.block_gas = block_gas;
+        rt.config.price_adjust_denominator = denominator;
+        assert!(rt.run_block(&mut s, 2, &mut host).is_err());
+        assert!(s.get(b"na2/base-price").is_none());
+        assert!(s.get(b"na2/last-block").is_none());
+    }
+}
+
+#[test]
+fn registration_and_budget_update_reserve_at_live_price() {
+    let (rt, api, mut s, c, mut host) = setup();
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
+    );
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    // A bid below the live price is admitted for later eligibility/grace handling.
+    let registered = funding(&rt, &api, &s, &c, id);
+    assert_eq!(registered.status, TaskStatus::Runnable);
+    let stored: TaskFunding = cosmwasm_std::from_json(
+        s.get(
+            &[
+                b"native-async/v1/task/".as_slice(),
+                c.as_bytes(),
+                b"/",
+                &id.to_be_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored.max_attempt_charge, Uint128::new(80));
+    rt.execute(
+        &api,
+        &mut s,
+        1,
+        &c,
+        management(serde_json::json!({"update_budget": {
+            "task_id": id, "actor": c, "gas_per_poll": 60,
+            "max_gas_price": "3", "refund": c,
+        }})),
+        false,
+        &mut host,
+    )
+    .unwrap();
+    let stored: TaskFunding = cosmwasm_std::from_json(
+        s.get(
+            &[
+                b"native-async/v1/task/".as_slice(),
+                c.as_bytes(),
+                b"/",
+                &id.to_be_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored.max_attempt_charge, Uint128::new(120));
+}
+
+#[test]
+fn resume_checks_current_base_price() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.gas = 45;
+    rt.run_block(&mut s, 2, &mut host).unwrap();
+    s.set(
+        b"na2/base-price",
+        &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
+    );
+    assert!(rt
+        .manage(
+            &api,
+            &mut s,
+            3,
+            &c,
+            SchedulerMsg::ResumeTask {
+                task_id: id,
+                actor: c.to_string(),
+            },
+            &mut host
+        )
+        .is_err());
+}
+
+#[test]
+fn overreported_poll_gas_is_capped_before_price_utilization() {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    host.gas = u64::MAX;
+    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(report.gas_used, 40);
+    assert_eq!(report.poll_gas_used, 38);
+    assert_eq!(rt.task(&s, &c, id, 2).unwrap().charged, Uint128::new(40));
+    assert_eq!(report.next_base_price, Decimal::one());
+}
+
+#[test]
 fn public_task_query_projects_lifecycle_without_internal_fields() {
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
@@ -334,7 +537,7 @@ fn extended_expiry_index_and_retention_survive_restart() {
         keeper: rt.keeper,
         config: rt.config,
     };
-    restored.config.block_gas = 1; // Exercise maintenance without invoking guest.
+    restored.config.block_gas = 2; // Positive price target, without invoking guest.
     assert_eq!(
         restored
             .run_block(&mut s, 20, &mut host)
@@ -590,6 +793,10 @@ fn setup() -> (Runtime, MockApi, MockStorage, Addr, TestHost) {
             config: FundingConfig {
                 denom: "ugas".into(),
                 gas_price: Decimal::one(),
+                min_base_price: Decimal::one(),
+                target_gas: 60,
+                price_grace_blocks: 3,
+                last_block_poll_gas_used: 0,
                 max_gas_per_poll: 100,
                 max_lifetime_blocks: 100,
             },
@@ -597,6 +804,9 @@ fn setup() -> (Runtime, MockApi, MockStorage, Addr, TestHost) {
         },
         config: RuntimeConfig {
             block_gas: 120,
+            price_grace_blocks: 3,
+            price_adjust_denominator: 8,
+            max_price_pauses: 10,
             host_gas: 2,
             maintenance_gas: 100,
             maintenance_gas_per_item: 1,
