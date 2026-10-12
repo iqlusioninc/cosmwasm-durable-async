@@ -182,7 +182,7 @@ missing or incompatible manifests rather than inventing them for existing data.
 This changes genesis state: pre-manifest experimental databases need an explicit
 upgrade, or a fresh experimental chain; they are not silently migrated.
 
-The Wasm snapshot extension verifies compressed payload size, code checksums,
+The Wasm snapshot extension verifies bounded decompressed Wasm size, code checksums,
 membership, uniqueness and completeness before activation. Raw Wasm is restored
 and compiled locally; machine-specific compiled caches are not transferred.
 The final chunk must match the offered trusted app hash, and read-only checks

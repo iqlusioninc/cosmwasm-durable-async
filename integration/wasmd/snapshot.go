@@ -29,13 +29,19 @@ type Snapshotter struct {
 	keeper        *Keeper
 	restoring     bool
 	restored      bool
+	extensionSeen bool
 	trustedHash   []byte
 	offeredHeight uint64
 	marker        string
+	logger        log.Logger
 }
 
-func NewSnapshotter(cms storetypes.CommitMultiStore, k *Keeper, wasm snapshot.ExtensionSnapshotter, homePath string) *Snapshotter {
-	return &Snapshotter{ExtensionSnapshotter: wasm, cms: cms, keeper: k, marker: restoreMarker(homePath)}
+func NewSnapshotter(cms storetypes.CommitMultiStore, k *Keeper, wasm snapshot.ExtensionSnapshotter, homePath string, logger log.Logger) *Snapshotter {
+	return &Snapshotter{ExtensionSnapshotter: wasm, cms: cms, keeper: k, marker: restoreMarker(homePath), logger: logger.With("module", ModuleName)}
+}
+
+func (s *Snapshotter) logRejected(stage string, err error) {
+	s.logger.Error("native async snapshot rejected", "height", s.offeredHeight, "stage", stage, "err", err)
 }
 
 func restoreMarker(homePath string) string {
@@ -92,7 +98,7 @@ func (s *Snapshotter) finishRestore() error {
 }
 
 func (s *Snapshotter) context(height uint64) sdk.Context {
-	return sdk.NewContext(s.cms, tmproto.Header{Height: int64(height)}, false, log.NewNopLogger())
+	return sdk.NewContext(s.cms, tmproto.Header{Height: int64(height)}, false, s.logger)
 }
 
 // CheckReady prevents block execution after an incomplete or rejected restore.
@@ -109,10 +115,12 @@ func (s *Snapshotter) OfferSnapshot(offer func(*abci.RequestOfferSnapshot) (*abc
 	if err == nil && response.Result == abci.ResponseOfferSnapshot_ACCEPT {
 		s.restoring = true
 		s.restored = false
+		s.extensionSeen = false
 		s.trustedHash = bytes.Clone(req.AppHash)
 		s.offeredHeight = req.Snapshot.Height
 		// No chunks can be accepted until the durable marker is present.
 		if err := s.markRestore(); err != nil {
+			s.logRejected("create pending marker", err)
 			return &abci.ResponseOfferSnapshot{Result: abci.ResponseOfferSnapshot_ABORT}, nil
 		}
 	}
@@ -123,6 +131,7 @@ func (s *Snapshotter) OfferSnapshot(offer func(*abci.RequestOfferSnapshot) (*abc
 // completion flag and accepts a stream that omits all extension metadata.
 func (s *Snapshotter) ApplySnapshotChunk(manager *snapshots.Manager, req *abci.RequestApplySnapshotChunk) (*abci.ResponseApplySnapshotChunk, error) {
 	if manager == nil || !s.restoring {
+		s.logRejected("apply chunk", fmt.Errorf("snapshot manager missing or no accepted restore"))
 		return &abci.ResponseApplySnapshotChunk{Result: abci.ResponseApplySnapshotChunk_ABORT}, nil
 	}
 	complete, err := manager.RestoreChunk(req.Chunk)
@@ -138,10 +147,12 @@ func (s *Snapshotter) ApplySnapshotChunk(manager *snapshots.Manager, req *abci.R
 		}
 	}
 	if err != nil {
+		s.logRejected("import or activation verification", err)
 		return &abci.ResponseApplySnapshotChunk{Result: abci.ResponseApplySnapshotChunk_ABORT}, nil
 	}
 	if complete {
 		if err := s.finishRestore(); err != nil {
+			s.logRejected("clear pending marker", err)
 			return &abci.ResponseApplySnapshotChunk{Result: abci.ResponseApplySnapshotChunk_ABORT}, nil
 		}
 		s.restoring = false
@@ -155,7 +166,7 @@ func (s *Snapshotter) SnapshotExtension(height uint64, write snapshot.ExtensionP
 	if err != nil {
 		return err
 	}
-	ctx := sdk.NewContext(cms, tmproto.Header{Height: int64(height)}, false, log.NewNopLogger())
+	ctx := sdk.NewContext(cms, tmproto.Header{Height: int64(height)}, false, s.logger)
 	if err := s.keeper.ValidateState(ctx); err != nil {
 		return err
 	}
@@ -171,6 +182,12 @@ func (s *Snapshotter) RestoreExtension(height uint64, format uint32, read snapsh
 			err = fmt.Errorf("snapshot restoration fault: %v", p)
 		}
 	}()
+	// The SDK dispatches every named section, including repeated names. Keep
+	// this receipt across the whole accepted restore, not merely one payload set.
+	if s.extensionSeen {
+		return fmt.Errorf("duplicate Wasm extension in snapshot")
+	}
+	s.extensionSeen = true
 	s.restored = false
 	ctx := s.context(height)
 	if s.restoring {

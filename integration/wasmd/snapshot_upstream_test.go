@@ -37,13 +37,13 @@ import (
 
 // Each side owns a different empty database, snapshot store and Wasm directory.
 // No file from the source home is copied or reused by the receiver.
-func newSnapshotApp(t *testing.T, genesis bool) *appHarness {
+func newSnapshotApp(t *testing.T, genesis bool, loggers ...log.Logger) *appHarness {
 	t.Helper()
 	home := t.TempDir()
 	entries, err := os.ReadDir(home)
 	require.NoError(t, err)
 	require.Empty(t, entries)
-	h := openSnapshotHome(t, home)
+	h := openSnapshotHome(t, home, loggers...)
 	if !genesis {
 		require.Zero(t, h.app.LastBlockHeight())
 		return h
@@ -52,7 +52,7 @@ func newSnapshotApp(t *testing.T, genesis bool) *appHarness {
 	return h
 }
 
-func openSnapshotHome(t *testing.T, home string) *appHarness {
+func openSnapshotHome(t *testing.T, home string, loggers ...log.Logger) *appHarness {
 	t.Helper()
 	h := &appHarness{home: home, key: secp256k1.GenPrivKeyFromSecret([]byte("native deterministic signer"))}
 	db, err := dbm.NewDB("application", dbm.GoLevelDBBackend, h.home)
@@ -76,7 +76,11 @@ func openSnapshotHome(t *testing.T, home string) *appHarness {
 			panic(p)
 		}
 	}()
-	h.app = wasmapp.NewWasmApp(log.NewNopLogger(), db, nil, true, sims.AppOptionsMap{flags.FlagHome: h.home}, opts,
+	logger := log.NewNopLogger()
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
+	h.app = wasmapp.NewWasmApp(logger, db, nil, true, sims.AppOptionsMap{flags.FlagHome: h.home}, opts,
 		baseapp.SetChainID(acceptanceChain), baseapp.SetSnapshot(store, snapshottypes.NewSnapshotOptions(0, 2)))
 	vmCleanup := h.cleanupVM
 	var once sync.Once
@@ -289,7 +293,7 @@ func TestSnapshotCorruptChunkRefetch(t *testing.T) {
 // authenticated IAVL state. This exercises code completeness, not merely the
 // SDK transport checksum gate.
 func TestSnapshotMissingWasmRejected(t *testing.T) {
-	for _, mode := range []string{"missing_payload", "missing_extension", "unexpected_code", "corrupt_gzip", "oversize_code", "duplicate_code"} {
+	for _, mode := range []string{"missing_payload", "missing_extension", "unexpected_code", "corrupt_gzip", "oversize_code", "duplicate_code", "duplicate_extension"} {
 		t.Run(mode, func(t *testing.T) {
 			source := newSnapshotApp(t, true)
 			source.block(t, source.execute(t, `{"start":{"gas_per_poll":80000000,"expires_at":100}}`, 1_000_000))
@@ -343,6 +347,18 @@ func TestSnapshotMissingWasmRejected(t *testing.T) {
 			}
 			require.NoError(t, reader.Close())
 			require.Positive(t, payloads)
+			if mode == "duplicate_extension" {
+				// Duplicate the entire named section, not just a payload within it.
+				// SDK restoration dispatches repeated names to the same snapshotter.
+				var section []*snapshottypes.SnapshotItem
+				for _, item := range items {
+					if item.GetExtension() != nil || item.GetExtensionPayload() != nil {
+						section = append(section, item)
+					}
+				}
+				require.Len(t, section, payloads+1)
+				items = append(items, section...)
+			}
 			output := make(chan io.ReadCloser)
 			writeErr := make(chan error, 1)
 			go func() {
@@ -365,7 +381,8 @@ func TestSnapshotMissingWasmRejected(t *testing.T) {
 			require.NoError(t, <-writeErr)
 			abciSnapshot, err := malicious.ToABCI()
 			require.NoError(t, err)
-			target := newSnapshotApp(t, false)
+			var diagnostic bytes.Buffer
+			target := newSnapshotApp(t, false, log.NewLogger(&diagnostic))
 			offer, err := target.app.OfferSnapshot(&abci.RequestOfferSnapshot{Snapshot: &abciSnapshot, AppHash: source.app.LastCommitID().Hash})
 			require.NoError(t, err)
 			require.Equal(t, abci.ResponseOfferSnapshot_ACCEPT, offer.Result)
@@ -383,6 +400,11 @@ func TestSnapshotMissingWasmRejected(t *testing.T) {
 			}
 			require.NotNil(t, final)
 			require.Equal(t, abci.ResponseApplySnapshotChunk_ABORT, final.Result, "missing Wasm must not activate even with valid chunk hashes and authentic task state")
+			require.Contains(t, diagnostic.String(), "native async snapshot rejected")
+			require.Contains(t, diagnostic.String(), fmt.Sprintf("height=%d", snap.Height))
+			if mode == "duplicate_extension" {
+				require.Contains(t, diagnostic.String(), "duplicate Wasm extension")
+			}
 			snapshotExecutionBlocked(t, target, int64(snap.Height)+1)
 		})
 	}
