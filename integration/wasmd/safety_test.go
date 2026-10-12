@@ -54,7 +54,7 @@ func TestMaintenanceOutOfGasAtomic(t *testing.T) {
 	require.False(t, ok)
 	ctx = ctx.WithGasMeter(storetypes.NewInfiniteGasMeter())
 	require.Equal(t, []byte("before"), k.store(ctx).Get(key))
-	k.Config.MaintenanceGas = 1
+	k.Config.MaintenanceGas = PriceFinalizationGas + 1
 	ctx = k.ReserveOrdinaryGas(ctx, 400_000_000)
 	require.NotPanics(t, func() { ctx = k.EndBlock(ctx, 400_000_000) })
 }

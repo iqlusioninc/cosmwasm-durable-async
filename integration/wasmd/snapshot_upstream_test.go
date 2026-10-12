@@ -178,6 +178,12 @@ func snapshotEqual(t *testing.T, source, target *appHarness) {
 	}
 	require.Equal(t, fmt.Sprint(ae), fmt.Sprint(be))
 	require.Equal(t, a, b, "restore must not charge escrow")
+	priceQuery := json.RawMessage(`{"funding_config":{}}`)
+	priceA, err := source.app.AsyncKeeper.Query(ctx(source), priceQuery)
+	require.NoError(t, err)
+	priceB, err := target.app.AsyncKeeper.Query(ctx(target), priceQuery)
+	require.NoError(t, err)
+	require.Equal(t, priceA, priceB, "restore must retain base price and previous block utilization")
 }
 
 func snapshotBlock(t *testing.T, source, target *appHarness, successful bool, txs ...[]byte) {

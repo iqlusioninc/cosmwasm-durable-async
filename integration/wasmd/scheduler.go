@@ -40,8 +40,12 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 		block = storetypes.NewGasMeter(total)
 		block.ConsumeGas(ordinary, "ordinary transaction partition")
 	}
-	meter := storetypes.NewGasMeter(k.Config.MaintenanceGas)
-	ctx = ctx.WithBlockGasMeter(block).WithGasMeter(meter).WithValue(schedulerKey{}, true)
+	finalization := storetypes.NewGasMeter(PriceFinalizationGas)
+	price := k.basePrice(ctx.WithGasMeter(finalization))
+	used := uint64(0)
+	meter := storetypes.NewGasMeter(k.Config.MaintenanceGas - PriceFinalizationGas)
+	ctx = ctx.WithBlockGasMeter(block).WithGasMeter(meter).WithValue(schedulerKey{}, true).
+		WithValue(blockPriceKey{}, price).WithValue(pollGasKey{}, &used)
 	for _, kind := range []string{"expiry", "prune", "timer"} {
 		for n := uint64(0); n < k.Config.MaxMaintenance; n++ {
 			more := false
@@ -65,7 +69,16 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 		block.ConsumeGas(consumed, "native async attempt")
 	}
 	block.ConsumeGas(meter.GasConsumedToLimit(), "native async maintenance")
-	return ctx.WithValue(schedulerKey{}, false).WithGasMeter(originalMeter)
+	// Mandatory finalization has a bounded, separately reserved meter, even if a
+	// discretionary visit exhausted its allowance. No state write is unmetered.
+	final := ctx.WithGasMeter(finalization)
+	target := (k.Config.AsyncGas - k.Config.MaintenanceGas) / 2
+	next := nextBasePrice(price, used, target, k.Config.MinBasePrice, k.Config.PriceAdjustDenominator)
+	k.store(final).Set([]byte("base_price"), []byte(next.String()))
+	setNumber(k.store(final), "last_poll_gas", used)
+	final.EventManager().EmitEvent(sdk.NewEvent("async_base_price", sdk.NewAttribute("old", price.String()), sdk.NewAttribute("new", next.String()), sdk.NewAttribute("used", fmt.Sprint(used)), sdk.NewAttribute("target", fmt.Sprint(target))))
+	block.ConsumeGas(finalization.GasConsumedToLimit(), "native async price finalization")
+	return ctx.WithValue(schedulerKey{}, false).WithValue(blockPriceKey{}, sdkmath.LegacyDec{}).WithValue(pollGasKey{}, (*uint64)(nil)).WithGasMeter(originalMeter)
 }
 
 // Every bounded maintenance visit is independently atomic. Exhaustion discards
@@ -137,13 +150,13 @@ func (k *Keeper) selectReady(ctx sdk.Context, remaining uint64) (*Task, bool) {
 		return nil, false
 	}
 	price, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
-	if price.LT(k.Config.GasPrice) {
+	if price.LT(k.basePrice(ctx)) {
 		t.Status = "paused"
 		t.Pause = "price_limit"
 		k.save(ctx, t)
 		return nil, false
 	}
-	if amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
+	if amount(t.Escrow).LT(k.fee(ctx, t.GasPerPoll)) {
 		t.Status = "paused"
 		t.Pause = "insufficient_funds"
 		k.save(ctx, t)
@@ -317,7 +330,7 @@ func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 			}
 		}
 	}()
-	reserve := k.fee(t.GasPerPoll)
+	reserve := k.fee(ctx, t.GasPerPoll)
 	t.Reserved = reserve.String()
 	t.Escrow = amount(t.Escrow).Sub(reserve).String()
 	k.save(ctx, *t)
@@ -350,6 +363,8 @@ func (k *Keeper) attempt(ctx sdk.Context, t *Task) (err error) {
 	return err
 }
 func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
+	price := k.basePrice(parent)
+	parent = parent.WithValue(blockPriceKey{}, price)
 	child, commit := parent.CacheContext()
 	execution := storetypes.NewGasMeter(old.GasPerPoll - k.Config.HostReserve)
 	child = child.WithGasMeter(execution).WithValue(pollingKey{}, string(taskKey(old.Owner, old.ID)))
@@ -379,7 +394,7 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	// First persist the disposition; these real SDK storage costs are charged.
 	k.save(accounting, t)
 	charged := execution.GasConsumedToLimit() + host.GasConsumedToLimit()
-	fee := k.fee(charged)
+	fee := k.feeAt(charged, price)
 	if err == nil {
 		t.Escrow = amount(t.Escrow).Add(amount(t.Reserved)).Sub(fee).String()
 	} else {
@@ -404,6 +419,9 @@ func (k *Keeper) poll(parent sdk.Context, old Task) uint64 {
 	} else {
 		k.save(accounting, t)
 	}
-	parent.EventManager().EmitEvent(sdk.NewEvent("async_poll", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("execution_gas", fmt.Sprint(execution.GasConsumedToLimit())), sdk.NewAttribute("charged_host_gas", fmt.Sprint(charged-execution.GasConsumedToLimit())), sdk.NewAttribute("maintenance_host_gas", fmt.Sprint(host.GasConsumedToLimit()-(charged-execution.GasConsumedToLimit()))), sdk.NewAttribute("total_gas", fmt.Sprint(execution.GasConsumedToLimit()+host.GasConsumedToLimit())), sdk.NewAttribute("fee", fee.String()), sdk.NewAttribute("pause_reason", t.Pause)))
+	if used, ok := parent.Value(pollGasKey{}).(*uint64); ok && used != nil {
+		*used += execution.GasConsumedToLimit()
+	}
+	parent.EventManager().EmitEvent(sdk.NewEvent("async_poll", sdk.NewAttribute("contract", t.Owner), sdk.NewAttribute("task_id", fmt.Sprint(t.ID)), sdk.NewAttribute("execution_gas", fmt.Sprint(execution.GasConsumedToLimit())), sdk.NewAttribute("charged_host_gas", fmt.Sprint(charged-execution.GasConsumedToLimit())), sdk.NewAttribute("maintenance_host_gas", fmt.Sprint(host.GasConsumedToLimit()-(charged-execution.GasConsumedToLimit()))), sdk.NewAttribute("total_gas", fmt.Sprint(execution.GasConsumedToLimit()+host.GasConsumedToLimit())), sdk.NewAttribute("price", price.String()), sdk.NewAttribute("fee", fee.String()), sdk.NewAttribute("pause_reason", t.Pause)))
 	return execution.GasConsumedToLimit() + host.GasConsumedToLimit()
 }

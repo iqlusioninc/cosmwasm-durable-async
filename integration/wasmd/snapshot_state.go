@@ -25,7 +25,7 @@ func (k *Keeper) stateManifest() []byte {
 	return marshal(struct {
 		Schema uint32 `json:"schema"`
 		Config Config `json:"config"`
-	}{1, k.Config})
+	}{2, k.Config})
 }
 
 // InitState is genesis-only. In particular, missing old-chain metadata is not
@@ -44,6 +44,8 @@ func (k *Keeper) InitState(ctx sdk.Context) error {
 		return fmt.Errorf("cannot initialize native async manifest over existing state")
 	}
 	k.store(ctx).Set([]byte(stateManifestKey), k.stateManifest())
+	k.store(ctx).Set([]byte("base_price"), []byte(k.Config.MinBasePrice.String()))
+	setNumber(k.store(ctx), "last_poll_gas", 0)
 	return nil
 }
 
@@ -60,6 +62,18 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 		return fmt.Errorf("native async schema or configuration mismatch (or missing manifest)")
 	}
 	expected := map[string][]byte{stateManifestKey: k.stateManifest()}
+	if b := s.Get([]byte("base_price")); b != nil {
+		if _, err := storedPrice(b, k.Config.MinBasePrice); err != nil {
+			return err
+		}
+		expected["base_price"] = b
+	}
+	if b := s.Get([]byte("last_poll_gas")); b != nil {
+		if len(b) != 8 || binary.BigEndian.Uint64(b) > k.Config.AsyncGas-k.Config.MaintenanceGas {
+			return fmt.Errorf("invalid last poll gas")
+		}
+		expected["last_poll_gas"] = b
+	}
 	counters := map[string]uint64{}
 	for _, name := range []string{"next_id", "ready_sequence", "contract_sequence", "active", "bytes"} {
 		b := s.Get([]byte(name))

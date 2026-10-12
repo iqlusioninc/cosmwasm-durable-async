@@ -53,11 +53,22 @@ func TestPatchedAppBlockHookAndMigrationGuard(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(raw, &funding))
 	require.NotEqual(t, "0", funding.Fees)
+	stats := map[string]map[string]string{}
+	for _, event := range ctx.EventManager().Events() {
+		if event.Type == "async_poll" || event.Type == "async_base_price" {
+			stats[event.Type] = map[string]string{}
+			for _, attr := range event.Attributes {
+				stats[event.Type][attr.Key] = attr.Value
+			}
+		}
+	}
+	require.Equal(t, "0.001000000000000000", stats["async_poll"]["price"])
+	require.Equal(t, map[string]string{"old": "0.001000000000000000", "new": "0.001000000000000000", "used": stats["async_poll"]["execution_gas"], "target": "80000000"}, stats["async_base_price"])
 }
 
 func TestPatchedAppModuleMeterIsolation(t *testing.T) {
 	app := wasmapp.Setup(t)
-	app.AsyncKeeper.Config.MaintenanceGas = 1
+	app.AsyncKeeper.Config.MaintenanceGas = async.PriceFinalizationGas + 1
 	ctx := app.NewContextLegacy(false, cmtproto.Header{Height: 2, Time: time.Unix(1_700_000_000, 0)}).WithConsensusParams(cmtproto.ConsensusParams{Block: &cmtproto.BlockParams{MaxGas: 400_000_000}}).WithBlockGasMeter(storetypes.NewGasMeter(400_000_000))
 	ordinary, e := app.AsyncKeeper.Config.OrdinaryGas(400_000_000)
 	require.NoError(t, e)

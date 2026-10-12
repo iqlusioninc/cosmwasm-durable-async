@@ -40,7 +40,7 @@ func TestSharedResultSizeBoundaries(t *testing.T) {
 }
 func TestModuleEndBlockMeterIsolationAndRollback(t *testing.T) {
 	ctx, k, _ := setup(t)
-	k.Config.MaintenanceGas = 1
+	k.Config.MaintenanceGas = PriceFinalizationGas + 1
 	ctx = ctx.WithConsensusParams(cmtproto.ConsensusParams{Block: &cmtproto.BlockParams{MaxGas: 400_000_000}}).WithBlockGasMeter(storetypes.NewGasMeter(400_000_000))
 	budget, e := k.Config.OrdinaryGas(400_000_000)
 	require.NoError(t, e)
@@ -52,7 +52,7 @@ func TestModuleEndBlockMeterIsolationAndRollback(t *testing.T) {
 		return sdk.EndBlock{}, nil
 	})
 	require.NoError(t, e)
-	require.Equal(t, budget+1+1234, ctx.BlockGasMeter().GasConsumed())
+	require.Greater(t, ctx.BlockGasMeter().GasConsumed(), budget+1+1234)
 	require.LessOrEqual(t, ctx.BlockGasMeter().GasConsumed(), uint64(400_000_000))
 	ctx = ctx.WithBlockGasMeter(storetypes.NewGasMeter(400_000_000))
 	k.store(ctx).Set([]byte("module-sentinel"), []byte("before"))

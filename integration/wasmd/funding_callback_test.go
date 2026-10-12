@@ -1,6 +1,7 @@
 package async
 
 import (
+	"encoding/json"
 	"fmt"
 	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	vmtypes "github.com/CosmWasm/wasmvm/v2/types"
@@ -31,6 +32,7 @@ func TestInflightFundingConservation(t *testing.T) {
 			require.NoError(t, e)
 			require.NoError(t, keepers.BankKeeper.SendCoins(ctx, creator, owner, sdk.NewCoins(sdk.NewInt64Coin("ugas", 50))))
 			ctx = ctx.WithBlockHeight(11)
+			k.store(ctx).Set([]byte("base_price"), []byte("0.002"))
 			old, stop := k.selectReady(ctx, 160_000_000)
 			require.False(t, stop)
 			require.NotNil(t, old)
@@ -38,7 +40,16 @@ func TestInflightFundingConservation(t *testing.T) {
 			k.messenger = wasmkeeper.MessageHandlerFunc(func(c sdk.Context, a sdk.AccAddress, _ string, _ vmtypes.CosmosMsg) ([]sdk.Event, [][]byte, [][]*codectypes.Any, error) {
 				task, e := k.load(c, a.String(), old.ID)
 				require.NoError(t, e)
-				require.Equal(t, k.fee(task.GasPerPoll).String(), task.Reserved)
+				require.Equal(t, "200000", task.Reserved)
+				// Deliberately mutate stored state to catch a callback rereading the
+				// live price instead of inheriting this attempt's immutable price.
+				k.store(c).Set([]byte("base_price"), []byte("0.004"))
+				require.Equal(t, "200000", k.fee(c, task.GasPerPoll).String())
+				query, e := k.Query(c, []byte(`{"funding_config":{}}`))
+				require.NoError(t, e)
+				var config map[string]any
+				require.NoError(t, json.Unmarshal(query, &config))
+				require.Equal(t, "0.002000000000000000", config["gas_price"])
 				e = k.Management(c, a.String(), marshal(map[string]any{"fund_task": FundTaskMsg{TaskID: old.ID, Contributor: creator.String(), Funds: sdk.NewInt64Coin("ugas", 17)}}))
 				require.NoError(t, e)
 				require.ErrorContains(t, k.Management(c, a.String(), marshal(map[string]any{"cancel_task": map[string]any{"task_id": old.ID, "actor": creator.String()}})), "in-flight")
@@ -64,6 +75,9 @@ func TestInflightFundingConservation(t *testing.T) {
 			require.Equal(t, "0", task.Reserved)
 			require.Equal(t, fmt.Sprint(ownerBalance), keepers.BankKeeper.GetBalance(ctx, owner, "ugas").Amount.String())
 			require.Equal(t, task.Escrow, keepers.BankKeeper.GetBalance(ctx, authtypes.NewModuleAddress(ModuleName), "ugas").Amount.String())
+			attrs := priceEvent(t, ctx, "async_poll")
+			require.Equal(t, "0.002000000000000000", attrs["price"])
+			require.Equal(t, map[bool]string{false: "0.004000000000000000", true: "0.002000000000000000"}[fail], k.basePrice(ctx).String())
 		})
 	}
 }

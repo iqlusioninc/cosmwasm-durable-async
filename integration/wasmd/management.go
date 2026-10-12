@@ -111,7 +111,7 @@ func (k *Keeper) UpdateBudget(ctx sdk.Context, owner string, r UpdateBudgetMsg) 
 		return err
 	}
 	// Use unbounded intermediates to reject overflow rather than panic inside SDK math.
-	scaled := new(big.Int).Mul(k.Config.GasPrice.BigInt(), new(big.Int).SetUint64(r.GasPerPoll))
+	scaled := new(big.Int).Mul(k.basePrice(cached).BigInt(), new(big.Int).SetUint64(r.GasPerPoll))
 	scale := big.NewInt(1_000_000_000_000_000_000)
 	scaled.Add(scaled, new(big.Int).Sub(new(big.Int).Set(scale), big.NewInt(1)))
 	if _, err = policyUint128(scaled.Quo(scaled, scale)); err != nil {

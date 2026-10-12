@@ -5,7 +5,44 @@ import (
 	"math/big"
 
 	sdkmath "cosmossdk.io/math"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
+
+// PriceFinalizationGas is reserved inside MaintenanceGas for two bounded state
+// reads and writes. SDK default KV costs for <=40-byte prices and an 8-byte gas
+// counter are well below this allowance, even at the maximum Decimal value.
+const PriceFinalizationGas uint64 = 100_000
+
+type blockPriceKey struct{}
+type pollGasKey struct{}
+
+func storedPrice(value []byte, floor sdkmath.LegacyDec) (sdkmath.LegacyDec, error) {
+	if len(value) == 0 || len(value) > 40 || validateMaxGasPrice(string(value)) != nil {
+		return sdkmath.LegacyDec{}, fmt.Errorf("invalid base price")
+	}
+	price, err := sdkmath.LegacyNewDecFromStr(string(value))
+	if err != nil || price.LT(floor) {
+		return sdkmath.LegacyDec{}, fmt.Errorf("base price below floor")
+	}
+	return price, nil
+}
+
+// Scheduler descendants (including immediate callbacks) retain the immutable
+// block-start price. Ordinary registration and queries read the live state.
+func (k *Keeper) basePrice(ctx sdk.Context) sdkmath.LegacyDec {
+	if price, ok := ctx.Value(blockPriceKey{}).(sdkmath.LegacyDec); ok && !price.IsNil() {
+		return price
+	}
+	b := k.store(ctx).Get([]byte("base_price"))
+	if b == nil {
+		return k.Config.MinBasePrice
+	}
+	price, err := storedPrice(b, k.Config.MinBasePrice)
+	if err != nil {
+		panic(err)
+	}
+	return price
+}
 
 var maxPriceAtomics = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1))
 

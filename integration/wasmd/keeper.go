@@ -26,7 +26,8 @@ type Bank interface {
 type Config struct {
 	ModuleEndBlockGas                                                       uint64
 	Denom                                                                   string
-	GasPrice                                                                sdkmath.LegacyDec
+	MinBasePrice                                                            sdkmath.LegacyDec
+	PriceGraceBlocks, PriceAdjustDenominator                                uint64
 	MaxPollGas, AsyncGas, MaintenanceGas, HostReserve                       uint64
 	MaxTasks, MaxBytes, MaxLifetime, MaxMessages, MaxVisits, MaxMaintenance uint64
 	StorageByteBlockPrice, CleanupPrice                                     sdkmath.Int
@@ -125,8 +126,11 @@ func (k *Keeper) transfer(ctx sdk.Context, from, to sdk.AccAddress, n sdkmath.In
 	}
 	return k.Bank.SendCoins(ctx, from, to, k.coin(n))
 }
-func (k *Keeper) fee(gas uint64) sdkmath.Int {
-	return k.Config.GasPrice.MulInt(sdkmath.NewIntFromUint64(gas)).Ceil().TruncateInt()
+func (k *Keeper) feeAt(gas uint64, price sdkmath.LegacyDec) sdkmath.Int {
+	return price.MulInt(sdkmath.NewIntFromUint64(gas)).Ceil().TruncateInt()
+}
+func (k *Keeper) fee(ctx sdk.Context, gas uint64) sdkmath.Int {
+	return k.feeAt(gas, k.basePrice(ctx))
 }
 func (k *Keeper) enqueue(ctx sdk.Context, t *Task, height uint64) {
 	s := k.store(ctx)
@@ -233,6 +237,7 @@ func (k *Keeper) finishTo(ctx sdk.Context, t *Task, status, recipient string) er
 	k.save(ctx, *t)
 	return nil
 }
+
 // settle is finish for scheduler paths, which must never halt the chain. If
 // the bank rejects the refund, the escrow goes to the controller, then to the
 // owning contract. If all three reject it, it stays in the module account
@@ -301,7 +306,7 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	code := k.Wasm.GetCodeInfo(ctx, ci.CodeID)
 	lease := c.StorageByteBlockPrice.Mul(sdkmath.NewIntFromUint64(r.AllocatedBytes)).Mul(sdkmath.NewIntFromUint64(r.ExpiresAt - height)).Add(c.CleanupPrice)
-	if r.Funds.Amount.LT(lease.Add(k.fee(r.GasPerPoll))) {
+	if r.Funds.Amount.LT(lease.Add(k.fee(ctx, r.GasPerPoll))) {
 		return 0, fmt.Errorf("insufficient prepaid lease and execution funding")
 	}
 	id := number(s, "next_id")
@@ -310,7 +315,9 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	}
 	id++
 	t := Task{ID: id, Owner: owner.String(), Register: r, Checksum: code.CodeHash, Status: "runnable", Escrow: r.Funds.Amount.Sub(lease).String(), Fees: "0", Reserved: "0", LeasePaid: lease.String()}
-	if e:=k.checkQuota(t);e!=nil{return 0,e}
+	if e := k.checkQuota(t); e != nil {
+		return 0, e
+	}
 	if e := k.transfer(ctx, owner, authtypes.NewModuleAddress(ModuleName), r.Funds.Amount); e != nil {
 		return 0, e
 	}
@@ -413,7 +420,7 @@ func (k *Keeper) Management(ctx sdk.Context, owner string, raw json.RawMessage) 
 				return fmt.Errorf("unauthorized or not paused")
 			}
 			p, _ := sdkmath.LegacyNewDecFromStr(t.MaxGasPrice)
-			if p.LT(k.Config.GasPrice) || amount(t.Escrow).LT(k.fee(t.GasPerPoll)) {
+			if p.LT(k.basePrice(ctx)) || amount(t.Escrow).LT(k.fee(ctx, t.GasPerPoll)) {
 				return fmt.Errorf("insufficient funds or price limit")
 			}
 			t.Pause = ""
@@ -497,7 +504,7 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 		}
 	}
 	if q["funding_config"] != nil {
-		return marshal(map[string]any{"denom": k.Config.Denom, "gas_price": k.Config.GasPrice.String(), "max_gas_per_poll": k.Config.MaxPollGas, "max_lifetime_blocks": k.Config.MaxLifetime}), nil
+		return marshal(map[string]any{"denom": k.Config.Denom, "gas_price": k.basePrice(ctx).String(), "min_base_price": k.Config.MinBasePrice.String(), "target_gas": (k.Config.AsyncGas - k.Config.MaintenanceGas) / 2, "price_grace_blocks": k.Config.PriceGraceBlocks, "last_block_poll_gas_used": number(k.store(ctx), "last_poll_gas"), "max_gas_per_poll": k.Config.MaxPollGas, "max_lifetime_blocks": k.Config.MaxLifetime}), nil
 	}
 	p := q["task"]
 	if p == nil {
@@ -521,7 +528,7 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 	}
 	if q["task_funding"] != nil {
 		status := response.Status
-		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
+		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(ctx, t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
 	}
 	return marshal(response), nil
 }
