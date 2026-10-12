@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	sdkmath "cosmossdk.io/math"
 	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -114,6 +115,7 @@ func TestRegistrationAndBudgetShareDecimalFundingDomain(t *testing.T) {
 	}
 	for _, price := range []string{"0", "0.001", "1", "1.5", "0001.000"} {
 		ctx, k, keepers := setup(t)
+		k.Config.MinBasePrice = sdkmath.LegacyZeroDec() // Syntax/domain is independent of the configured admission floor.
 		owner := registrationOwner(t, ctx, k)
 		keepers.Faucet.Fund(ctx, owner, sdk.NewInt64Coin("ugas", 2_000_000))
 		r := registrationPolicy(owner)
@@ -122,6 +124,68 @@ func TestRegistrationAndBudgetShareDecimalFundingDomain(t *testing.T) {
 		require.NoError(t, err, price)
 		require.NoError(t, k.UpdateBudget(ctx, owner.String(), UpdateBudgetMsg{TaskID: id, Actor: owner.String(), Refund: owner.String(), GasPerPoll: r.GasPerPoll, MaxGasPrice: price}), price)
 	}
+}
+
+func TestRegistrationRejectsBidBelowFloor(t *testing.T) {
+	ctx, k, keepers := setup(t)
+	owner := registrationOwner(t, ctx, k)
+	keepers.Faucet.Fund(ctx, owner, sdk.NewInt64Coin("ugas", 3_000_000))
+	r := registrationPolicy(owner)
+	r.MaxGasPrice = "0.000999999999999999"
+	before := policySnapshot(ctx, k)
+	balance := keepers.BankKeeper.GetAllBalances(ctx, owner)
+	_, err := k.RegisterTask(ctx, owner, r)
+	require.Error(t, err)
+	require.Equal(t, before, policySnapshot(ctx, k))
+	require.Equal(t, balance, keepers.BankKeeper.GetAllBalances(ctx, owner))
+	// Exactly the floor remains admissible below current base, provided funding
+	// covers one attempt at that live price rather than the task's smaller bid.
+	k.store(ctx).Set([]byte("base_price"), []byte("0.02"))
+	r.MaxGasPrice = "0.001"
+	before = policySnapshot(ctx, k)
+	_, err = k.RegisterTask(ctx, owner, r)
+	require.ErrorContains(t, err, "funding")
+	require.Equal(t, before, policySnapshot(ctx, k))
+	r.Funds = sdk.NewInt64Coin("ugas", 2_000_100)
+	id, err := k.RegisterTask(ctx, owner, r)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), id)
+	task, err := k.load(ctx, owner.String(), id)
+	require.NoError(t, err)
+	require.Equal(t, "runnable", task.Status)
+	require.Equal(t, "2000000", task.Escrow)
+}
+
+// Live-base and funding checks are independent requirements; equality suffices
+// only when escrow also funds the entire attempt at that same base price.
+func TestResumeRequiresBidAtBase(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.store(ctx).Set([]byte("base_price"), []byte("0.004"))
+	task := queuedAuctionTask(ctx, k, 1, "0.003", 80_000_000, 10)
+	k.store(ctx).Delete(task.QueueKey)
+	task.QueueKey, task.Status, task.Pause = nil, "paused", "price_limit"
+	k.save(ctx, task)
+	resume := marshal(map[string]any{"resume_task": map[string]any{"task_id": task.ID, "actor": task.Control}})
+	before := policySnapshot(ctx, k)
+	require.Error(t, k.Management(ctx, task.Owner, resume))
+	require.Equal(t, before, policySnapshot(ctx, k))
+	require.NoError(t, k.UpdateBudget(ctx, task.Owner, UpdateBudgetMsg{TaskID: task.ID, Actor: task.Control, GasPerPoll: task.GasPerPoll, MaxGasPrice: "0.004", Refund: task.Refund}))
+	task, err := k.load(ctx, task.Owner, task.ID)
+	require.NoError(t, err)
+	task.Escrow = "319999"
+	k.save(ctx, task)
+	before = policySnapshot(ctx, k)
+	require.Error(t, k.Management(ctx, task.Owner, resume))
+	require.Equal(t, before, policySnapshot(ctx, k))
+	task.Escrow = "320000"
+	k.save(ctx, task)
+	require.NoError(t, k.Management(ctx, task.Owner, resume))
+	task, err = k.load(ctx, task.Owner, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, "runnable", task.Status)
+	require.Empty(t, task.Pause)
+	require.Equal(t, uint64(11), task.ReadyAt)
+	require.True(t, strings.HasPrefix(string(task.QueueKey), "due/"))
 }
 
 func TestLastActiveTaskRemovesOwnerCountAndPruningKeepsIDs(t *testing.T) {

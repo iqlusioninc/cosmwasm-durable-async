@@ -255,6 +255,10 @@ func (k *Keeper) RegisterTask(ctx sdk.Context, owner sdk.AccAddress, r Register)
 	if err := validateMaxGasPrice(r.MaxGasPrice); err != nil {
 		return 0, err
 	}
+	price, _ := sdkmath.LegacyNewDecFromStr(r.MaxGasPrice)
+	if price.LT(c.MinBasePrice) {
+		return 0, fmt.Errorf("bid below minimum base price")
+	}
 	if r.GasPerPoll <= c.HostReserve || r.GasPerPoll > c.MaxPollGas || r.ExpiresAt <= height || r.ExpiresAt-height > c.MaxLifetime || r.AllocatedBytes < 1024 || r.AllocatedBytes > c.MaxBytes || uint64(len(r.Program.Input)) > r.AllocatedBytes/2 || len(r.Program.Kind) > 128 || r.Program.Kind == "" {
 		return 0, fmt.Errorf("invalid limits")
 	}

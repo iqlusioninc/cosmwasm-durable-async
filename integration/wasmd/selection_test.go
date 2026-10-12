@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	storetypes "cosmossdk.io/store/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 )
@@ -363,4 +364,264 @@ func TestValidateStateRejectsContractQueueKeys(t *testing.T) {
 			require.Error(t, h.k.ValidateState(ctx))
 		})
 	}
+}
+
+func auctionBlock(ctx sdk.Context, k *Keeper, height int64) sdk.Context {
+	ctx = ctx.WithBlockHeight(height).WithGasMeter(storetypes.NewInfiniteGasMeter())
+	return k.EndBlock(k.ReserveOrdinaryGas(ctx, 400_000_000), 400_000_000)
+}
+
+// Pausing before the third full block of readiness, resetting age at promotion,
+// or charging a task without polling breaks this boundary test.
+func TestPricedOutPausesOnlyAfterGrace(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.Config.PriceGraceBlocks = 3
+	k.store(ctx).Set([]byte("base_price"), []byte("4"))
+	task := queuedAuctionTask(ctx, k, 1, "1", 80_000_000, 11)
+	for height := int64(11); height <= 14; height++ {
+		ctx = auctionBlock(ctx, k, height)
+		got, err := k.load(ctx, task.Owner, task.ID)
+		require.NoError(t, err)
+		require.Equal(t, task.Escrow, got.Escrow)
+		require.Equal(t, task.Fees, got.Fees)
+		require.Zero(t, got.LastPoll)
+		require.Equal(t, uint64(11), got.ReadyAt)
+		require.Equal(t, task.ReadySequence, got.ReadySequence)
+		if height < 14 {
+			require.Equal(t, "runnable", got.Status)
+			require.True(t, bytes.HasPrefix(got.QueueKey, []byte("bid/")))
+		} else {
+			require.Equal(t, "paused", got.Status)
+			require.Equal(t, "price_limit", got.Pause)
+			require.Nil(t, got.QueueKey)
+			require.Nil(t, k.store(ctx).Get(bidKey("1", 11, task.ReadySequence)))
+		}
+	}
+}
+
+// Exhausted poll capacity must retain an old eligible bid without price pause.
+func TestFullBlockWaitNeverPricePauses(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.Config.PriceGraceBlocks = 0
+	k.store(ctx).Set([]byte("base_price"), []byte("2"))
+	task := queuedAuctionTask(ctx, k, 1, "2", 80_000_000, 10)
+	ctx = ctx.WithBlockHeight(30)
+	got, stop := k.selectReady(ctx, 0, nil)
+	require.True(t, stop)
+	require.Nil(t, got)
+	// Consume selection's only visit with a stale higher bid, keeping this
+	// already-capacity-blocked task queued while EndBlock runs maintenance.
+	k.Config.MaxVisits = 1
+	k.store(ctx).Set(bidKey("3", 10, 99), []byte("task/missing"))
+	ctx = auctionBlock(ctx, k, 30)
+	unchanged, err := k.load(ctx, task.Owner, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, task, unchanged)
+}
+
+// This follows the reachable delivery -> runnable -> price pause path. Losing
+// an accepted inbox, auto-resuming on decay, or failing explicit resume breaks it.
+func TestPricePauseSurvivesPriceDropUntilResume(t *testing.T) {
+	h := newFaultHarness(t)
+	h.k.Config.PriceGraceBlocks = 3
+	require.NoError(t, h.k.InitState(h.ctx))
+	h.start(t, 80_000_000, 100)
+	h.block(11)
+	h.ctx = h.ctx.WithBlockHeight(12)
+	h.execute(t, map[string]any{"deliver": map[string]any{"task_id": 1, "wait_sequence": 1}}, 0)
+	ready := h.task(t, 1)
+	require.NoError(t, h.k.UpdateBudget(h.ctx, ready.Owner, UpdateBudgetMsg{TaskID: 1, Actor: ready.Control, GasPerPoll: ready.GasPerPoll, MaxGasPrice: "0.001", Refund: ready.Refund}))
+	h.k.store(h.ctx).Set([]byte("base_price"), []byte("0.004"))
+	for height := int64(12); height <= 15; height++ {
+		h.block(height)
+	}
+	paused := h.task(t, 1)
+	require.Equal(t, "price_limit", paused.Pause)
+	require.Equal(t, "paused", paused.Status)
+	require.Equal(t, ready.Wait, paused.Wait)
+	require.Equal(t, ready.Inbox, paused.Inbox)
+	require.Equal(t, ready.State, paused.State)
+	require.Equal(t, ready.Escrow, paused.Escrow)
+	require.Equal(t, ready.Fees, paused.Fees)
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	h.k.store(h.ctx).Set([]byte("base_price"), []byte("0.001"))
+	h.block(16)
+	require.Equal(t, paused, h.task(t, 1))
+	require.NoError(t, h.k.Management(h.ctx, paused.Owner, marshal(map[string]any{"resume_task": map[string]any{"task_id": 1, "actor": paused.Control}})))
+	require.Equal(t, uint64(17), h.task(t, 1).ReadyAt)
+	h.block(17)
+	require.Equal(t, "completed", h.task(t, 1).Status)
+	require.Equal(t, uint64(17), h.task(t, 1).LastPoll)
+	require.NoError(t, h.k.ValidateState(h.ctx))
+}
+
+// A real poll and same-height delivery establish LastPoll=ReadyAt=11. Lowering
+// the bid at h=12 must not restart grace or allocate another FIFO sequence.
+func TestLoweredBidGraceCountsFromLastPoll(t *testing.T) {
+	h := newFaultHarness(t)
+	h.k.Config.PriceGraceBlocks = 3
+	h.start(t, 80_000_000, 100)
+	h.block(11)
+	require.Equal(t, uint64(11), h.task(t, 1).LastPoll)
+	h.execute(t, map[string]any{"deliver": map[string]any{"task_id": 1, "wait_sequence": 1}}, 0)
+	ready := h.task(t, 1)
+	require.Equal(t, uint64(11), ready.ReadyAt)
+	h.ctx = h.ctx.WithBlockHeight(12)
+	h.k.store(h.ctx).Set([]byte("base_price"), []byte("0.004"))
+	require.NoError(t, h.k.UpdateBudget(h.ctx, ready.Owner, UpdateBudgetMsg{TaskID: 1, Actor: ready.Control, GasPerPoll: ready.GasPerPoll, MaxGasPrice: "0.001", Refund: ready.Refund}))
+	updated := h.task(t, 1)
+	require.Equal(t, ready.ReadyAt, updated.ReadyAt)
+	require.Equal(t, ready.ReadySequence, updated.ReadySequence)
+	require.Equal(t, ready.LastPoll, updated.LastPoll)
+	for height := int64(12); height <= 14; height++ {
+		h.block(height)
+		got := h.task(t, 1)
+		if height < 14 {
+			require.Equal(t, "runnable", got.Status)
+		} else {
+			require.Equal(t, "price_limit", got.Pause)
+		}
+		require.Equal(t, updated.Escrow, got.Escrow)
+		require.Equal(t, updated.Fees, got.Fees)
+	}
+}
+
+// Every inspected young entry consumes the cap. A fresh bounded walk on the
+// next block can reach the old task once the cap covers those skips.
+func TestPriceMaintenanceBoundsYoungSkips(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.Config.PriceGraceBlocks = 3
+	k.Config.MaxMaintenance = 2
+	k.store(ctx).Set([]byte("base_price"), []byte("4"))
+	old := queuedAuctionTask(ctx, k, 1, "2", 80_000_000, 10)
+	ctx = ctx.WithBlockHeight(20)
+	for id := uint64(2); id <= 3; id++ {
+		queuedAuctionTask(ctx, k, id, "1", 80_000_000, 20)
+	}
+	ctx = auctionBlock(ctx, k, 20)
+	unchanged, err := k.load(ctx, old.Owner, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, old, unchanged)
+	k.Config.MaxMaintenance = 3
+	ctx = auctionBlock(ctx, k, 21)
+	paused, err := k.load(ctx, old.Owner, old.ID)
+	require.NoError(t, err)
+	require.Equal(t, "price_limit", paused.Pause)
+	for id := uint64(2); id <= 3; id++ {
+		got, err := k.load(ctx, sdk.AccAddress(bytes.Repeat([]byte{byte(id)}, 20)).String(), id)
+		require.NoError(t, err)
+		require.Equal(t, "runnable", got.Status)
+	}
+}
+
+// A later costly entry must not roll back an earlier pause or prevent mandatory
+// price finalization; the original entry remains intact after failed inspection.
+func TestPricePauseSurvivesLaterVisitOutOfGas(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.Config.PriceGraceBlocks = 0
+	k.Config.MaxMaintenance = 2
+	k.Config.MaintenanceGas = PriceFinalizationGas + 100_000
+	k.store(ctx).Set([]byte("base_price"), []byte("4"))
+	first := queuedAuctionTask(ctx, k, 1, "1", 80_000_000, 10)
+	later := queuedAuctionTask(ctx, k, 2, "2", 80_000_000, 10)
+	later.State = make([]byte, 150_000)
+	later.AllocatedBytes = 300_000
+	require.NoError(t, k.checkQuota(later))
+	k.save(ctx, later)
+	require.NotPanics(t, func() { ctx = auctionBlock(ctx, k, 10) })
+	paused, err := k.load(ctx, first.Owner, first.ID)
+	require.NoError(t, err)
+	require.Equal(t, "price_limit", paused.Pause)
+	require.Nil(t, paused.QueueKey)
+	require.Equal(t, first.Escrow, paused.Escrow)
+	untouched, err := k.load(ctx, later.Owner, later.ID)
+	require.NoError(t, err)
+	require.Equal(t, later, untouched)
+	require.Equal(t, "3.500000000000000000", k.basePrice(ctx).String())
+	require.LessOrEqual(t, ctx.BlockGasMeter().GasConsumed(), k.Config.MaintenanceGas)
+	k.Config.MaintenanceGas = 40_000_000
+	ctx = auctionBlock(ctx, k, 11)
+	pausedLater, err := k.load(ctx, later.Owner, later.ID)
+	require.NoError(t, err)
+	require.Equal(t, "price_limit", pausedLater.Pause)
+	require.Equal(t, later.State, pausedLater.State)
+	require.Equal(t, later.Escrow, pausedLater.Escrow)
+}
+
+// Timer resolution and due promotion precede price inspection; an overdue
+// timer retains its original age and its newly accepted timer inbox on pause.
+func TestOverdueTimerPricePausesAfterPromotion(t *testing.T) {
+	ctx, k, _ := setup(t)
+	k.Config.PriceGraceBlocks = 3
+	queuedAuctionTask(ctx, k, 1, "1", 80_000_000, 10)
+	task, stop := k.selectReady(ctx, 100_000_000, nil)
+	require.False(t, stop)
+	stageAuctionTimer(t, ctx, k, task, 11)
+	readySequence := task.ReadySequence
+	k.store(ctx).Set([]byte("base_price"), []byte("4"))
+	ctx = auctionBlock(ctx, k, 14)
+	paused, err := k.load(ctx, task.Owner, task.ID)
+	require.NoError(t, err)
+	require.Equal(t, "price_limit", paused.Pause)
+	require.Equal(t, uint64(11), paused.ReadyAt)
+	require.Equal(t, readySequence, paused.ReadySequence)
+	require.NotNil(t, paused.Wait)
+	require.NotNil(t, paused.Inbox.Timer)
+	require.Equal(t, []byte{1}, paused.State)
+	require.Nil(t, paused.TimerKey)
+	require.Nil(t, paused.QueueKey)
+}
+
+func TestPricePausedTaskStillExpires(t *testing.T) {
+	ctx, k, keepers := setup(t)
+	k.Config.PriceGraceBlocks = 0
+	owner := registrationOwner(t, ctx, k)
+	keepers.Faucet.Fund(ctx, owner, sdk.NewInt64Coin("ugas", 1_000_000))
+	r := registrationPolicy(owner)
+	r.MaxGasPrice, r.ExpiresAt = "0.001", 14
+	id, err := k.RegisterTask(ctx, owner, r)
+	require.NoError(t, err)
+	k.store(ctx).Set([]byte("base_price"), []byte("0.004"))
+	ctx = auctionBlock(ctx, k, 11)
+	paused, err := k.load(ctx, owner.String(), id)
+	require.NoError(t, err)
+	require.Equal(t, "price_limit", paused.Pause)
+	ctx = auctionBlock(ctx, k, 14)
+	_, err = k.load(ctx, owner.String(), id)
+	require.Error(t, err, "expired record pruned at lease end")
+	require.Zero(t, number(k.store(ctx), "active"))
+	require.Equal(t, "999900", keepers.BankKeeper.GetBalance(ctx, owner, "ugas").Amount.String())
+}
+
+// Expiry's per-kind cap can leave another expired bid for a later block. Price
+// maintenance must not relabel that task as price-paused in the meantime.
+func TestExpiredPricedOutBacklogDoesNotPricePause(t *testing.T) {
+	ctx, k, keepers := setup(t)
+	k.Config.PriceGraceBlocks = 0
+	k.Config.MaxMaintenance = 1
+	owner := registrationOwner(t, ctx, k)
+	keepers.Faucet.Fund(ctx, owner, sdk.NewInt64Coin("ugas", 3_000_000))
+	r := registrationPolicy(owner)
+	r.MaxGasPrice, r.ExpiresAt = "0.001", 14
+	for i := 0; i < 2; i++ {
+		_, err := k.RegisterTask(ctx, owner, r)
+		require.NoError(t, err)
+	}
+	ctx = ctx.WithBlockHeight(11)
+	require.True(t, k.promoteDue(ctx))
+	require.True(t, k.promoteDue(ctx))
+	k.store(ctx).Set([]byte("base_price"), []byte("0.004"))
+	ctx = auctionBlock(ctx, k, 14)
+	_, err := k.load(ctx, owner.String(), 1)
+	require.Error(t, err, "the expired record is pruned at its prepaid endpoint")
+	require.Equal(t, uint64(1), number(k.store(ctx), "active"))
+	second, err := k.load(ctx, owner.String(), 2)
+	require.NoError(t, err)
+	require.Equal(t, "runnable", second.Status)
+	require.Empty(t, second.Pause)
+	ctx = auctionBlock(ctx, k, 15)
+	_, err = k.load(ctx, owner.String(), 2)
+	require.Error(t, err)
+	require.Zero(t, number(k.store(ctx), "active"))
+	require.Equal(t, "2999800", keepers.BankKeeper.GetBalance(ctx, owner, "ugas").Amount.String())
 }

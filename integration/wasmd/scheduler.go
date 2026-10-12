@@ -72,6 +72,7 @@ func (k *Keeper) EndBlock(ctx sdk.Context, total uint64) sdk.Context {
 			}
 		}
 	}
+	k.pricePauses(ctx)
 	remaining := k.Config.AsyncGas - k.Config.MaintenanceGas
 	for {
 		var selected *Task
@@ -119,6 +120,69 @@ func cachedMaintenance(ctx sdk.Context, f func(sdk.Context)) (ok bool) {
 	commit()
 	return true
 }
+
+// Price is one additional maintenance kind: like expiry/timer/due it has its
+// own MaxMaintenance inspection cap, and shares their discretionary gas meter.
+// A one-key reverse cursor bounds reads as well as writes, so a later costly
+// entry cannot roll back earlier pauses. Young entries also consume the cap.
+func (k *Keeper) pricePauses(ctx sdk.Context) {
+	prefix := []byte("bid/")
+	end := storetypes.PrefixEndBytes(prefix)
+	boundary := []byte("bid/" + bidComponent(k.basePrice(ctx)))
+	height := uint64(ctx.BlockHeight())
+	for n := uint64(0); n < k.Config.MaxMaintenance; n++ {
+		stop := false
+		if !cachedMaintenance(ctx, func(c sdk.Context) {
+			s := k.store(c)
+			key, value := func() ([]byte, []byte) {
+				it := s.ReverseIterator(prefix, end)
+				defer it.Close() // Close even when a metered read panics.
+				if !it.Valid() {
+					return nil, nil
+				}
+				return bytes.Clone(it.Key()), bytes.Clone(it.Value())
+			}() // Iterator is closed before any mutation.
+			if key == nil {
+				stop = true
+				return
+			}
+			end = key // ReverseIterator's upper bound is exclusive.
+			// Inverted bids sort lowest last; eligibility ends the reverse walk.
+			if len(key) < len(boundary) || bytes.Compare(key[:len(boundary)], boundary) <= 0 {
+				stop = true
+				return
+			}
+			b := s.Get(value)
+			if b == nil {
+				s.Delete(key)
+				return
+			}
+			var t Task
+			if err := json.Unmarshal(b, &t); err != nil {
+				panic(err)
+			}
+			if !bytes.Equal(t.QueueKey, key) || !bytes.Equal(value, taskKey(t.Owner, t.ID)) {
+				s.Delete(key)
+				return
+			}
+			// Expiry may have a backlog; never replace its outcome with a pause.
+			if terminal(t) || t.Status != "runnable" || height >= t.ExpiresAt {
+				return
+			}
+			since := max(t.ReadyAt, t.LastPoll)
+			if height < since || height-since < k.Config.PriceGraceBlocks {
+				return
+			}
+			s.Delete(key)
+			t.QueueKey = nil
+			t.Status, t.Pause = "paused", "price_limit"
+			k.save(c, t)
+		}) || stop {
+			break
+		}
+	}
+}
+
 func (k *Keeper) promoteDue(ctx sdk.Context) bool {
 	key, value := k.first(ctx, "due", uint64(ctx.BlockHeight()))
 	if key == nil {
