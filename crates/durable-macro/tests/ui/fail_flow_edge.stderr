@@ -1,0 +1,5 @@
+error: control-flow edge requires this outer local; include it in every checkpoint on this path
+ --> tests/ui/fail_flow_edge.rs:7:32
+  |
+7 | async fn bad(ctx: WorkflowCtx, limit: u32) -> Result<u32, WaitError> {
+  |                                ^^^^^

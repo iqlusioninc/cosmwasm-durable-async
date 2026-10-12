@@ -22,6 +22,52 @@ pub trait Workflow {
     ) -> RuntimeResult<Transition>;
 }
 
+/// Typed child composition. Definitions are immutable: a change to any child's
+/// encoding or meaning requires a new containing workflow version. Manual
+/// implementations must report an honest, acyclic composition depth.
+pub trait TypedWorkflow: Workflow {
+    type Output: Serialize + DeserializeOwned;
+    type Error: Serialize + DeserializeOwned;
+    const COMPOSITION_DEPTH: usize;
+}
+
+/// Persisted child identity, pinned to the parent definition at its call site.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ChildContinuation {
+    pub kind: String,
+    pub version: u32,
+    pub state: Binary,
+}
+
+impl ChildContinuation {
+    pub fn new<W: TypedWorkflow>(state: Binary) -> Self {
+        Self {
+            kind: W::KIND.into(),
+            version: W::VERSION,
+            state,
+        }
+    }
+
+    pub fn check<W: TypedWorkflow>(&self) -> RuntimeResult<()> {
+        if self.kind != W::KIND || self.version != W::VERSION {
+            return Err(RuntimeError::Validation(
+                "durable child identity/version mismatch".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn decode_child_result<W: TypedWorkflow>(
+    transition: Transition,
+) -> RuntimeResult<Result<W::Output, W::Error>> {
+    match transition {
+        Transition::Completed(value) => Ok(Ok(cosmwasm_std::from_json(value)?)),
+        Transition::Failed(value) => Ok(Err(cosmwasm_std::from_json(value)?)),
+        Transition::Wait { .. } => Err(RuntimeError::Validation("child is still waiting".into())),
+    }
+}
+
 pub type StartHandler = for<'a> fn(&mut WorkflowCtx<'a>, Binary) -> RuntimeResult<Transition>;
 pub type ValidateHandler = fn(&Binary, &Resolution) -> RuntimeResult<()>;
 pub type OperationHandler = fn(&Binary) -> RuntimeResult<&'static str>;

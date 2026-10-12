@@ -1,0 +1,1 @@
+{"outcome":{"pending":{"state":"e30=","wait":{"operation":{"resolver":"payment-service","deadline":900,"max_result_bytes":1024}}}},"messages":[{"wasm":{"execute":{"contract_addr":"payment-service","msg":"e30=","funds":[]}}}]}

@@ -18,6 +18,7 @@ pub(crate) struct Binding {
 }
 
 pub(crate) struct Wait {
+    pub child: bool,
     pub operation: Type,
     pub request: Expr,
     pub checkpoint: Vec<Binding>,
@@ -35,6 +36,7 @@ pub(crate) struct ParsedWorkflow {
     pub error: Type,
     pub waits: Vec<Wait>,
     pub segments: Vec<Vec<Stmt>>,
+    pub flow: Option<crate::flow::Graph>,
 }
 
 #[derive(Clone)]
@@ -126,6 +128,21 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
         );
         inputs.push(binding);
     }
+    if crate::flow::needed(&item.block, &context) {
+        let (flow, waits) = crate::flow::lower(&item.block, &context, &inputs)?;
+        return Ok(ParsedWorkflow {
+            item,
+            kind,
+            version,
+            context,
+            inputs,
+            output,
+            error,
+            waits,
+            segments: Vec::new(),
+            flow: Some(flow),
+        });
+    }
     let mut waits = Vec::new();
     let mut segments = vec![Vec::new()];
     let mut omitted = BTreeSet::new();
@@ -156,7 +173,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
             }
             if let Some((awaited, propagate)) = direct_await(local) {
                 simple_pattern(&local.pat)?;
-                let (operation, request, names) = wait_expression(&awaited.base, &context)?;
+                let (operation, request, names, child) = wait_expression(&awaited.base, &context)?;
                 restricted_expression(&request)?;
                 check_omitted_expression(&request, &omitted)?;
                 let mut checkpoint = Vec::new();
@@ -229,6 +246,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
                 record_local(local, &mut locals);
                 waits.push(Wait {
                     operation,
+                    child,
                     request,
                     checkpoint,
                     local: local.clone(),
@@ -265,6 +283,7 @@ pub(crate) fn parse(attributes: TokenStream, mut item: ItemFn) -> syn::Result<Pa
         error,
         waits,
         segments,
+        flow: None,
     })
 }
 
@@ -350,7 +369,7 @@ fn result_types(output: &ReturnType) -> syn::Result<(Type, Type)> {
     ))
 }
 
-fn simple_pattern(pattern: &Pat) -> syn::Result<(&Ident, bool)> {
+pub(crate) fn simple_pattern(pattern: &Pat) -> syn::Result<(&Ident, bool)> {
     let pattern = if let Pat::Type(pattern) = pattern {
         pattern.pat.as_ref()
     } else {
@@ -463,7 +482,7 @@ fn anchor_source_paths(item: &mut ItemFn) -> syn::Result<()> {
     anchor.error.map_or(Ok(()), Err)
 }
 
-fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<()> {
+pub(crate) fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<()> {
     for attribute in attributes {
         if attribute.path().is_ident("cfg") || attribute.path().is_ident("cfg_attr") {
             return Err(syn::Error::new_spanned(attribute, "conditional compilation on workflow arguments or statements is not supported; conditionally compile the whole workflow"));
@@ -472,7 +491,10 @@ fn reject_conditional_attributes(attributes: &[syn::Attribute]) -> syn::Result<(
     Ok(())
 }
 
-fn check_omitted_expression(expression: &Expr, omitted: &BTreeSet<String>) -> syn::Result<()> {
+pub(crate) fn check_omitted_expression(
+    expression: &Expr,
+    omitted: &BTreeSet<String>,
+) -> syn::Result<()> {
     let mut names = OmittedNames {
         omitted: omitted.clone(),
         error: None,
@@ -555,7 +577,7 @@ impl<'a> Visit<'a> for OmittedNames {
     }
 }
 
-fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
+pub(crate) fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
     match local.init.as_ref()?.expr.as_ref() {
         Expr::Await(awaited) => Some((awaited, false)),
         Expr::Try(tried) => {
@@ -569,7 +591,10 @@ fn direct_await(local: &Local) -> Option<(&syn::ExprAwait, bool)> {
     }
 }
 
-fn wait_expression(expression: &Expr, context: &Ident) -> syn::Result<(Type, Expr, Vec<Ident>)> {
+pub(crate) fn wait_expression(
+    expression: &Expr,
+    context: &Ident,
+) -> syn::Result<(Type, Expr, Vec<Ident>, bool)> {
     let invalid = || {
         syn::Error::new_spanned(
             expression,
@@ -585,7 +610,7 @@ fn wait_expression(expression: &Expr, context: &Ident) -> syn::Result<(Type, Exp
     let Expr::MethodCall(wait) = checkpoint.receiver.as_ref() else {
         return Err(invalid());
     };
-    if wait.method != "wait" || wait.args.len() != 1 {
+    if (wait.method != "wait" && wait.method != "call") || wait.args.len() != 1 {
         return Err(invalid());
     }
     if !matches!(wait.receiver.as_ref(), Expr::Path(path) if path.path.is_ident(context)) {
@@ -613,10 +638,15 @@ fn wait_expression(expression: &Expr, context: &Ident) -> syn::Result<(Type, Exp
             "checkpoint accepts only local identifiers",
         ));
     }
-    Ok((operation.clone(), wait.args.first().unwrap().clone(), names))
+    Ok((
+        operation.clone(),
+        wait.args.first().unwrap().clone(),
+        names,
+        wait.method == "call",
+    ))
 }
 
-fn owned_type(ty: &Type) -> syn::Result<()> {
+pub(crate) fn owned_type(ty: &Type) -> syn::Result<()> {
     #[derive(Default)]
     struct OwnedType(Option<syn::Error>);
     impl<'a> Visit<'a> for OwnedType {
@@ -664,7 +694,7 @@ fn owned_type(ty: &Type) -> syn::Result<()> {
     owned.0.map_or(Ok(()), Err)
 }
 
-fn restricted_expression(expression: &Expr) -> syn::Result<()> {
+pub(crate) fn restricted_expression(expression: &Expr) -> syn::Result<()> {
     let mut restriction = Restrictions::default();
     restriction.visit_expr(expression);
     restriction.finish()

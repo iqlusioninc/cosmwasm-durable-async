@@ -1,0 +1,1 @@
+{"register":{"control":"controller","refund":"refund","gas_per_poll":500000,"max_gas_price":"0.1","expires_at":1000,"funds":{"denom":"ugas","amount":"1000000"},"program":{"kind":"fulfill","version":1,"input":"eyJvcmRlciI6eyJpZCI6NDJ9fQ=="},"allocated_bytes":4096}}

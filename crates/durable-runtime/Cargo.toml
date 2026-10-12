@@ -4,7 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+native = ["dep:native-async"]
+
 [dependencies]
 cosmwasm-std.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+native-async = { path = "../native-async", optional = true }

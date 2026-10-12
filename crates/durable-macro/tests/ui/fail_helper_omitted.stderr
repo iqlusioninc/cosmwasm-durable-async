@@ -1,0 +1,5 @@
+error: local was omitted from the checkpoint; checkpoint it or declare it again before use
+ --> tests/ui/fail_helper_omitted.rs:8:17
+  |
+8 |     Ok(result + value)
+  |                 ^^^^^

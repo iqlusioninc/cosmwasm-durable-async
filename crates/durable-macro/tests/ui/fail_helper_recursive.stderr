@@ -1,0 +1,13 @@
+error[E0391]: cycle detected when simplifying constant for the type system `recursive::<impl at $DIR/tests/ui/fail_helper_recursive.rs:3:1: 3:49>::COMPOSITION_DEPTH`
+ --> tests/ui/fail_helper_recursive.rs:3:1
+  |
+3 | #[durable_workflow(kind="recursive", version=1)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: ...which requires const-evaluating + checking `recursive::<impl at $DIR/tests/ui/fail_helper_recursive.rs:3:1: 3:49>::COMPOSITION_DEPTH`...
+  = note: ...which requires caching mir of `recursive::<impl at $DIR/tests/ui/fail_helper_recursive.rs:3:1: 3:49>::COMPOSITION_DEPTH` for CTFE...
+  = note: ...which requires elaborating drops for `recursive::<impl at $DIR/tests/ui/fail_helper_recursive.rs:3:1: 3:49>::COMPOSITION_DEPTH`...
+  = note: ...which again requires simplifying constant for the type system `recursive::<impl at $DIR/tests/ui/fail_helper_recursive.rs:3:1: 3:49>::COMPOSITION_DEPTH`, completing the cycle
+  = note: cycle used when const-evaluating + checking `recursive::_`
+  = note: for more information, see <https://rustc-dev-guide.rust-lang.org/overview.html#queries> and <https://rustc-dev-guide.rust-lang.org/query.html>
+  = note: this error originates in the attribute macro `durable_workflow` (in Nightly builds, run with -Z macro-backtrace for more info)

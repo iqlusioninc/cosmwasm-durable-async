@@ -492,6 +492,7 @@ name = "durable-runtime"
 version = "0.1.0"
 dependencies = [
  "cosmwasm-std",
+ "native-async",
  "serde",
  "thiserror 2.0.21",
 ]
@@ -733,6 +734,29 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "native-async"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "cw-multi-test",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "native-fulfill-example"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "durable-macro",
+ "durable-runtime",
+ "native-async",
+ "serde",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "num-bigint"

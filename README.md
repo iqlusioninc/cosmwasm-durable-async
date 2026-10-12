@@ -1,6 +1,6 @@
 # Durable async workflows for CosmWasm
 
-A prototype Rust runtime and procedural macro for workflows that suspend at explicit checkpoints and resume in later CosmWasm transactions. The macro compiles restricted `async` functions into serializable state machines. Execution uses ordinary CosmWasm entry points and contract storage.
+A prototype Rust compiler and runtime for workflows that suspend at explicit checkpoints. The macro compiles restricted `async` functions into serializable state machines. Two execution paths are available: transaction-driven contract storage, and an experimental native scheduler with task escrow and automatic block execution.
 
 ```rust
 #[durable_workflow(kind = "fulfill", version = 1)]
@@ -43,12 +43,16 @@ The workspace contains:
 | `durable-runtime` | Persistent lifecycle, authenticated callbacks, deadlines, limits, version registry, and explicit migration |
 | `durable-macro` | Checkpoint compiler and compile-time restrictions |
 | `fulfill-example` | Two-wait contract and transactional integration tests |
+| `native-async` | Native poll ABI, funding SDK, and persisted reference scheduler |
+| `native-fulfill-example` | Generated workflows exposed through the native poll and funding interfaces |
 
 ## Checkpoints and restrictions
 
 Every value needed after an await must appear in `.checkpoint(...)`. Checkpointed arguments and locals need explicit owned types implementing `Serialize + DeserializeOwned`; a checkpointed local must have a type annotation on its declaration. Values moved into an operation request cannot also be checkpointed. `.checkpoint()` is valid when no local values need to survive.
 
-V1 accepts straight-line functions returning `Result<Output, Error>` and waits written as simple local initializers. Only `.wait::<Operation>(request).checkpoint(...).await` is durable; arbitrary futures, loops, nested awaits, concurrent waits, and generic workflow definitions are excluded. Synchronous helpers may perform application logic and storage access. Each segment receives a fresh `WorkflowCtx`; references and invocation capabilities cannot cross an await.
+Workflows return `Result<Output, Error>` and durable waits are simple local initializers. Statement-level branches, `while`, `loop`, and unlabeled `break`/`continue` are supported. Control-flow mode requires explicitly typed owned locals, no shadowing, and captures of outer locals on every join/backedge path; it does not infer liveness. `for`, expression-valued durable control flow, arbitrary futures, concurrent waits, and generic workflow definitions remain excluded. Synchronous helpers may perform application logic and storage access. Each segment receives a fresh `WorkflowCtx`; references and invocation capabilities cannot cross an await.
+
+Durable helpers use `ctx.call::<child::Workflow>(child::Input { ... }).checkpoint(parent_fields...).await?`. They share the parent's task and escrow; explicit parent captures and child state survive each wait. Helper callers use the typed control-flow dialect. Immediate child completion continues in the same poll, and sequential helper loops dispatch iteratively. Composition is acyclic and limited to 16 nested calls. Changing a child's definition requires a new containing parent version. Publicly exported workflows need public output/error types; generated workflow visibility follows the original function.
 
 Workflow bodies also exclude macro invocations, conditional `cfg`/`cfg_attr` attributes, and source paths beginning with `self::` or `super::`. Put such logic in synchronous helpers or use `crate::` paths. These restrictions prevent module relocation or opaque macro expansion from changing name resolution. The context parameter cannot be shadowed, and `Input` and `Workflow` are reserved local binding names; same-named parent types remain usable.
 
@@ -84,10 +88,16 @@ Each segment is atomic within its transaction. A saved wait and its outbound mes
 
 A propagated application error is recorded as terminal `Failed` while the entry point returns successfully. Storage writes made earlier in that segment commit with that failure record. Application failure does not roll back earlier transactions or reverse remote actions. If the entire transaction subsequently fails, the failure record rolls back too.
 
-There is no background executor, exactly-once off-chain delivery, automatic compensation, or cancellation. Runtime limits bound active instance counts and serialized payload sizes, but synchronous segment execution remains subject to chain gas limits. Finite deadlines and explicit expiration provide a resolution path; they do not guarantee someone submits a successful transaction. Terminal records are retained and consume storage.
+The transaction-driven example has no background executor or cancellation. Neither execution path promises exactly-once off-chain delivery or automatic compensation. Runtime limits bound active instance counts and serialized payload sizes, but synchronous segment execution remains subject to chain gas limits. The transaction-driven path requires explicit expiration transactions and retains terminal records; the native path has bounded expiry/pruning and prepaid retention.
 
 ## Design and verification scope
 
+The [native CosmWasm async design](docs/superpowers/specs/2026-10-11-native-cosmwasm-async-design.md) describes chain-managed tasks, block scheduling, prepaid gas, and durable wakeups. The [dynamic implementation plan](docs/superpowers/plans/2026-10-11-native-async-runtime.md) tracks implementation and acceptance gates; the design's full production validation criteria are not implied by unit tests.
+
+The [native runtime](crates/native-async/README.md) implements task-specific escrow, bounded deterministic scheduling, durable inboxes/timers, atomic poll rollback with fee settlement, storage leases, refunds, and migration gating. The [native example](contracts/native-fulfill/README.md) exposes registration, authenticated callbacks, and the mandatory funding/query interface. The pinned [wasmd adapter](integration/wasmd) executes this ABI through privileged Sudo with SDK gas meters. Run Rust integration tests with `cargo test --workspace --all-features --locked`; real Wasm/chain checks are a separate suite.
+
+Native `gas_per_poll` is the total attempt cap, including bounded host overhead. Funding never grants execution authority or automatically retries a paused task. Controllers can prepay lease/quota growth and update the poll cap, price ceiling, or refund recipient; resumption remains explicit. Lease extension never extends an existing operation deadline.
+
 The [design specification](docs/superpowers/specs/2026-10-03-cosmwasm-durable-async-design.md) explains the continuation and transaction model. The [implementation plan](docs/superpowers/plans/2026-10-03-cosmwasm-durable-async.md) records the package interfaces and verification tasks.
 
-Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, and retained versions. Transactional integration uses cw-multi-test to verify rollback after outbound message failures. The prototype has no production IBC adapter, external scheduler, or gas-metered VM test suite. Same-transaction callbacks may occur if a service resolves immediately; adapters requiring a later transaction must enforce that additional policy.
+Tests cover generated workflows, compiler restrictions, lifecycle validation, callback authorization, deadlines, failure records, retained versions, native scheduling, and escrow accounting. Transactional integration also uses cw-multi-test. There is no production IBC adapter, unrestricted Rust Future persistence, guaranteed per-block service class, or production gas calibration. Same-transaction callbacks may store an immediate result; native scheduler-generated wakeups cannot recursively poll and are eligible no earlier than the next block.

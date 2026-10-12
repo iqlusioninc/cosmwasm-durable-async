@@ -1,0 +1,5 @@
+error: checkpoint and input types must be owned; references are not supported
+ --> tests/ui/fail_flow_borrow.rs:9:15
+  |
+9 |     let held: &u32 = &value;
+  |               ^^^^

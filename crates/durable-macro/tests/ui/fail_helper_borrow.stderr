@@ -1,0 +1,5 @@
+error: checkpoint and input types must be owned; references are not supported
+ --> tests/ui/fail_helper_borrow.rs:7:16
+  |
+7 |     let value: &str = "borrowed";
+  |                ^^^^

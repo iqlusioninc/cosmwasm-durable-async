@@ -1,0 +1,24 @@
+[package]
+name = "native-fulfill-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[example]]
+name = "native_service"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "native_fault"
+crate-type = ["cdylib"]
+
+[dependencies]
+durable-runtime = { workspace = true, features = ["native"] }
+durable-macro.workspace = true
+native-async = { path = "../../crates/native-async" }
+cosmwasm-std.workspace = true
+serde.workspace = true
+thiserror.workspace = true

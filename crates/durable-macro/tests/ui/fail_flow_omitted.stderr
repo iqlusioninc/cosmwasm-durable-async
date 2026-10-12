@@ -1,0 +1,5 @@
+error: local was omitted from the checkpoint; checkpoint it or declare it again before use
+  --> tests/ui/fail_flow_omitted.rs:12:9
+   |
+12 |         total += value;
+   |         ^^^^^

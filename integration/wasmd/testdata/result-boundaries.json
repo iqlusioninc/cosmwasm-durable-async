@@ -1,0 +1,7 @@
+[
+ {"name":"decoded_binary_at_limit","max_result_bytes":4,"resolution":{"success":{"data":"AAEC/w=="}},"accepted":true},
+ {"name":"decoded_binary_over_limit","max_result_bytes":4,"resolution":{"success":{"data":"AAEC/wA="}},"accepted":false},
+ {"name":"utf8_error_at_limit","max_result_bytes":4,"resolution":{"error":{"code":"é","message":"é"}},"accepted":true},
+ {"name":"utf8_error_over_limit","max_result_bytes":4,"resolution":{"error":{"code":"é","message":"éa"}},"accepted":false},
+ {"name":"escaped_error_at_limit","max_result_bytes":4,"resolution":{"error":{"code":"\u0000\u0001","message":"\u0002\u0003"}},"accepted":true}
+]

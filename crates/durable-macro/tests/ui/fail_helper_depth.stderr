@@ -1,0 +1,13 @@
+error[E0080]: evaluation panicked: durable helper composition exceeds maximum depth 16
+  --> tests/ui/fail_helper_depth.rs:87:1
+   |
+87 | #[durable_workflow(kind="depth17", version=1)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<depth17::Workflow as durable_runtime::TypedWorkflow>::COMPOSITION_DEPTH` failed here
+
+note: erroneous constant encountered
+  --> tests/ui/fail_helper_depth.rs:87:1
+   |
+87 | #[durable_workflow(kind="depth17", version=1)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this note originates in the attribute macro `durable_workflow` (in Nightly builds, run with -Z macro-backtrace for more info)
