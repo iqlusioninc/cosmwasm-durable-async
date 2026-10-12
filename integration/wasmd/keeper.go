@@ -528,7 +528,11 @@ func (k *Keeper) Query(ctx sdk.Context, raw json.RawMessage) ([]byte, error) {
 	}
 	if q["task_funding"] != nil {
 		status := response.Status
-		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": k.fee(ctx, t.GasPerPoll).String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
+		charge, err := policyUint128(k.fee(ctx, t.GasPerPoll).BigInt())
+		if err != nil {
+			return nil, err
+		}
+		return marshal(map[string]any{"task_id": t.ID, "contract": t.Owner, "control": t.Control, "refund": t.Refund, "available": t.Escrow, "reserved": t.Reserved, "cumulative_execution_fees": t.Fees, "gas_per_poll": t.GasPerPoll, "max_gas_price": t.MaxGasPrice, "max_attempt_charge": charge.String(), "expires_at": t.ExpiresAt, "status": status, "allocated_bytes": t.AllocatedBytes, "storage_lease_paid": t.LeasePaid}), nil
 	}
 	return marshal(response), nil
 }

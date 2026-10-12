@@ -243,6 +243,78 @@ func TestPriceFinalizationBoundsAndZeroFloor(t *testing.T) {
 	require.NoError(t, h.k.ValidateState(h.ctx))
 }
 
+// Admission and continuation are real; the legal congestion price is applied
+// directly because burning 2e18 real VM gas is not a practical test workload.
+func TestReservationOverflowAfterPriceIncrease(t *testing.T) {
+	h := newFaultHarness(t)
+	const cap uint64 = 2_000_000_000_000_000_000
+	h.k.Config.AsyncGas = cap + h.k.Config.MaintenanceGas
+	h.k.Config.MaxPollGas = cap
+	h.k.Config.MinBasePrice = sdkmath.LegacyMustNewDecFromStr("170000000000000000000")
+	require.NoError(t, h.k.InitState(h.ctx))
+	funds, ok := sdkmath.NewIntFromString("340000000000000000000000000000000000100")
+	require.True(t, ok)
+	smallFunds, ok := sdkmath.NewIntFromString("20000000000000000000000000100")
+	require.True(t, ok)
+	h.keepers.Faucet.Fund(h.ctx, h.owner, sdk.NewCoin("ugas", funds.Add(smallFunds)))
+	r := Register{Control: h.creator.String(), Refund: h.creator.String(), GasPerPoll: cap, MaxGasPrice: "200000000000000000000", ExpiresAt: 100, AllocatedBytes: 8192, Program: Program{Kind: "fault", Version: 1, Input: []byte{}}, Funds: sdk.NewCoin("ugas", funds)}
+	id, err := h.k.RegisterTask(h.ctx, h.owner, r)
+	require.NoError(t, err)
+	query := marshal(map[string]any{"task_funding": map[string]any{"contract": h.owner.String(), "task_id": id}})
+	raw, err := h.k.Query(h.ctx, query)
+	require.NoError(t, err)
+	var quote map[string]any
+	require.NoError(t, json.Unmarshal(raw, &quote))
+	require.Equal(t, "340000000000000000000000000000000000000", quote["max_attempt_charge"])
+	update := func(gas uint64) error {
+		return h.k.UpdateBudget(h.ctx, h.owner.String(), UpdateBudgetMsg{TaskID: id, Actor: h.creator.String(), Refund: h.creator.String(), GasPerPoll: gas, MaxGasPrice: r.MaxGasPrice})
+	}
+	require.NoError(t, update(80_000_000))
+	block := func(height int64) {
+		h.ctx = h.ctx.WithBlockHeight(height).WithGasMeter(storetypes.NewInfiniteGasMeter()).WithEventManager(sdk.NewEventManager())
+		h.ctx = h.k.ReserveOrdinaryGas(h.ctx, 4_000_000_000_000_000_000)
+		h.ctx = h.k.EndBlock(h.ctx, 4_000_000_000_000_000_000)
+	}
+	block(11)
+	h.execute(t, map[string]any{"deliver": map[string]any{"task_id": id, "wait_sequence": 1}}, 0)
+	require.NoError(t, update(cap))
+	r.GasPerPoll = 80_000_000
+	r.Funds = sdk.NewCoin("ugas", smallFunds)
+	small, err := h.k.RegisterTask(h.ctx, h.owner, r)
+	require.NoError(t, err)
+	before := h.task(t, id)
+	require.NotNil(t, before.Inbox)
+	// Literal independently computed from base170e18, used=cap-70m,
+	// target=cap/2, denominator8; both price and old reservation fit u128.
+	h.k.store(h.ctx).Set([]byte("base_price"), []byte("191249999998512500000"))
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	_, err = h.k.Query(h.ctx, query)
+	require.Error(t, err, "max_attempt_charge must remain decodable as Uint128")
+	snapshot := policySnapshot(h.ctx, h.k)
+	r.GasPerPoll = cap
+	r.Funds = sdk.NewCoin("ugas", sdkmath.NewIntFromBigInt(maxPriceAtomics))
+	_, err = h.k.RegisterTask(h.ctx, h.owner, r)
+	require.Error(t, err)
+	require.Error(t, update(cap))
+	require.Equal(t, snapshot, policySnapshot(h.ctx, h.k))
+	block(12)
+	after := h.task(t, id)
+	require.Equal(t, "insufficient_funds", after.Pause)
+	require.Equal(t, "paused", after.Status)
+	require.Equal(t, before.Fees, after.Fees)
+	require.Equal(t, before.Escrow, after.Escrow)
+	require.Equal(t, before.State, after.State)
+	require.Equal(t, before.Inbox, after.Inbox)
+	require.Equal(t, before.Wait, after.Wait)
+	require.Equal(t, before.LastPoll, after.LastPoll)
+	require.Equal(t, "waiting", h.task(t, small).Status, "affordable work continues in the same block")
+	require.NoError(t, h.k.ValidateState(h.ctx))
+	h.k.store(h.ctx).Set([]byte("base_price"), []byte("191249999998512500000"))
+	snapshot = policySnapshot(h.ctx, h.k)
+	require.Error(t, h.k.Management(h.ctx, h.owner.String(), marshal(map[string]any{"resume_task": map[string]any{"task_id": id, "actor": h.creator.String()}})))
+	require.Equal(t, snapshot, policySnapshot(h.ctx, h.k))
+}
+
 func TestBasePriceLargeIntegerInputs(t *testing.T) {
 	maxUint64 := ^uint64(0)
 	maxPrice := sdkmath.LegacyMustNewDecFromStr("340282366920938463463.374607431768211455")

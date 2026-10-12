@@ -1182,11 +1182,13 @@ impl Runtime {
                 save(s, &t)?;
                 continue;
             }
-            let charge = self.keeper.attempt_charge_at(f.gas_per_poll, base_price)?;
-            let blocked = if f.available < charge {
-                Some(PauseReason::InsufficientFunds)
-            } else {
-                None
+            // A price increase can make an admitted task's next reservation
+            // exceed the Uint128 coin domain. No valid escrow can afford that
+            // charge; pause it like any other insufficient-funds task.
+            let charge = self.keeper.attempt_charge_at(f.gas_per_poll, base_price);
+            let blocked = match &charge {
+                Ok(charge) if f.available >= *charge => None,
+                _ => Some(PauseReason::InsufficientFunds),
             };
             if let Some(reason) = blocked {
                 t.status = ExecutionStatus::Paused;
@@ -1197,6 +1199,7 @@ impl Runtime {
                 save(s, &t)?;
                 host::save(s, &addr, &f)?;
             } else {
+                let charge = charge?; // Only the affordable, representable branch reaches here.
                 t.last_attempt = Some(h);
                 t.reserved = charge;
                 f.available = f.available.checked_sub(charge)?;

@@ -685,6 +685,208 @@ fn polls_are_charged_at_block_base_price() {
     assert_eq!(funding.max_attempt_charge, Uint128::new(72)); // ceil(40 * 1.779166666666666667)
 }
 
+// A task admitted with a representable reservation can become unaffordable
+// after a legal price increase. Overflow must not abort unrelated block work.
+#[test]
+fn reservation_overflow_after_price_increase_pauses_without_charge() {
+    let (mut rt, api, mut s, c, mut host) = setup();
+    let cap = 2_000_000_000_000_000_000u64;
+    rt.config.block_gas = cap;
+    rt.config.host_gas = 70_000_000;
+    rt.keeper.config.max_gas_per_poll = cap;
+    set_base(&mut s, "170000000000000000000");
+    s.set(
+        format!("bank/{c}").as_bytes(),
+        &cosmwasm_std::to_json_vec(&Uint128::MAX).unwrap(),
+    );
+    let registration = |gas, bid: &str, funds: u128| SchedulerMsg::RegisterTask {
+        control: c.to_string(),
+        refund: c.to_string(),
+        gas_per_poll: gas,
+        max_gas_price: bid.parse().unwrap(),
+        expires_at: 20,
+        funds: Coin::new(funds, "ugas"),
+    };
+    let program = TaskProgram {
+        kind: "test".into(),
+        version: 1,
+        input: Binary::default(),
+    };
+    let id = rt
+        .register(
+            &api,
+            &mut s,
+            1,
+            &c,
+            registration(
+                cap,
+                "200000000000000000000",
+                340000000000000000000000000000000000001,
+            ),
+            program.clone(),
+            4096,
+            &mut host,
+        )
+        .unwrap();
+    let initial: TaskFunding = cosmwasm_std::from_json(
+        rt.query(
+            &api,
+            &s,
+            1,
+            RuntimeQuery::Funding(SchedulerQuery::TaskFunding {
+                contract: c.to_string(),
+                task_id: id,
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        initial.max_attempt_charge,
+        Uint128::new(340000000000000000000000000000000000000)
+    );
+    let small = rt
+        .register(
+            &api,
+            &mut s,
+            1,
+            &c,
+            registration(
+                80_000_000,
+                "199000000000000000000",
+                20000000000000000000000000001,
+            ),
+            program.clone(),
+            4096,
+            &mut host,
+        )
+        .unwrap();
+    host.gas = cap - rt.config.host_gas;
+    host.outcome = PollOutcome::Pending {
+        state: Binary::from(b"saved".as_slice()),
+        wait: Wait::Operation {
+            resolver: "service".into(),
+            deadline: 10,
+            max_result_bytes: 20,
+        },
+    };
+    let full = rt.run_block(&mut s, 2, &mut host).unwrap();
+    assert_eq!(full.polls, 1);
+    assert_eq!(full.poll_gas_used, 1_999_999_999_930_000_000);
+    assert_eq!(
+        full.next_base_price,
+        "191249999998512500000".parse::<Decimal>().unwrap()
+    );
+    rt.deliver(
+        &mut s,
+        2,
+        &c,
+        id,
+        1,
+        "service",
+        Resolution::Success {
+            data: Binary::from(b"yes".as_slice()),
+        },
+        false,
+    )
+    .unwrap();
+    let before = rt.task(&s, &c, id, 2).unwrap();
+    assert_eq!(
+        before.charged,
+        Uint128::new(340000000000000000000000000000000000000)
+    );
+    assert!(before.inbox.is_some());
+    let query = RuntimeQuery::Funding(SchedulerQuery::TaskFunding {
+        contract: c.to_string(),
+        task_id: id,
+    });
+    assert!(
+        rt.query(&api, &s, 2, query).is_err(),
+        "quote must remain Uint128"
+    );
+    let snapshot: Vec<_> = s
+        .range(None, None, cosmwasm_std::Order::Ascending)
+        .collect();
+    assert!(rt
+        .register(
+            &api,
+            &mut s,
+            2,
+            &c,
+            registration(cap, "200000000000000000000", Uint128::MAX.u128()),
+            program,
+            4096,
+            &mut host
+        )
+        .is_err());
+    let budget = management(serde_json::json!({"update_budget":{
+        "task_id":id,"actor":c,"refund":c,"gas_per_poll":cap,
+        "max_gas_price":"200000000000000000000",
+    }}));
+    assert!(rt
+        .execute(&api, &mut s, 2, &c, budget, false, &mut host)
+        .is_err());
+    assert_eq!(
+        snapshot,
+        s.range(None, None, cosmwasm_std::Order::Ascending)
+            .collect::<Vec<_>>()
+    );
+    host.gas = 7;
+    let report = rt.run_block(&mut s, 3, &mut host).unwrap();
+    assert_eq!(
+        report.polls, 1,
+        "another affordable task continues in the same block"
+    );
+    assert_eq!(
+        poll_log(&s),
+        vec![(c.to_string(), id), (c.to_string(), small)]
+    );
+    let after = rt.task(&s, &c, id, 3).unwrap();
+    assert_eq!(after.status, ExecutionStatus::Paused);
+    assert_eq!(after.charged, before.charged);
+    assert_eq!(after.state, before.state);
+    assert_eq!(after.inbox, before.inbox);
+    assert_eq!(after.wait, before.wait);
+    assert_eq!(after.last_attempt, before.last_attempt);
+    let key = [
+        b"native-async/v1/task/".as_slice(),
+        c.as_bytes(),
+        b"/",
+        &id.to_be_bytes(),
+    ]
+    .concat();
+    let funds: TaskFunding = cosmwasm_std::from_json(s.get(&key).unwrap()).unwrap();
+    assert_eq!(
+        funds.status,
+        TaskStatus::Paused {
+            reason: PauseReason::InsufficientFunds,
+            resume: ResumeState::Runnable
+        }
+    );
+    assert!(funds.available.is_zero());
+    // Reapply the observed congestion price to check the paused task's resume
+    // rejects an impossible quote, rather than only its exhausted balance.
+    set_base(&mut s, "191249999998512500000");
+    let saved = cosmwasm_std::to_json_vec(&after).unwrap();
+    assert!(rt
+        .manage(
+            &api,
+            &mut s,
+            3,
+            &c,
+            SchedulerMsg::ResumeTask {
+                task_id: id,
+                actor: c.to_string()
+            },
+            &mut host
+        )
+        .is_err());
+    assert_eq!(
+        saved,
+        cosmwasm_std::to_json_vec(&rt.task(&s, &c, id, 3).unwrap()).unwrap()
+    );
+}
+
 #[test]
 fn funding_config_reports_live_price() {
     let (rt, api, mut s, _, mut host) = setup();
