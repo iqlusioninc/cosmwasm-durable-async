@@ -35,6 +35,9 @@ func TestGoldenABI(t *testing.T) {
 	require.NoError(t, e)
 	require.NotEmpty(t, files)
 	for _, f := range files {
+		if filepath.Base(f) == "base-price.json" {
+			continue // Pricing math fixture, not an ABI round-trip fixture.
+		}
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			b, e := os.ReadFile(f)
 			require.NoError(t, e)
