@@ -183,6 +183,135 @@ fn price_pause_survives_price_drop_until_resume_and_keeps_inbox() {
 }
 
 #[test]
+fn matured_height_timer_keeps_resolution_through_price_pause_and_resume() {
+    matured_wait_keeps_resolution_through_price_pause_and_resume(
+        Wait::Height { height: 4 },
+        Resolution::Timer {},
+    );
+}
+
+#[test]
+fn matured_operation_timeout_keeps_resolution_through_price_pause_and_resume() {
+    matured_wait_keeps_resolution_through_price_pause_and_resume(
+        Wait::Operation {
+            resolver: "service".into(),
+            deadline: 4,
+            max_result_bytes: 20,
+        },
+        Resolution::Timeout {},
+    );
+}
+
+fn matured_wait_keeps_resolution_through_price_pause_and_resume(
+    wait: Wait,
+    resolution: Resolution,
+) {
+    let (rt, api, mut s, c, mut host) = setup();
+    let id = register(&rt, &api, &mut s, &c, &mut host);
+    let state = Binary::from(b"saved".as_slice());
+    host.outcome = PollOutcome::Pending {
+        state: state.clone(),
+        wait: wait.clone(),
+    };
+    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    let due_key = s
+        .range(
+            Some(b"na2/due/"),
+            Some(b"na2/due0"),
+            cosmwasm_std::Order::Ascending,
+        )
+        .next()
+        .unwrap()
+        .0;
+    let original_sequence = &due_key[due_key.len() - 8..];
+    let query = |s: &dyn Storage, height| -> TaskResponse {
+        cosmwasm_std::from_json(
+            rt.query(
+                &api,
+                s,
+                height,
+                RuntimeQuery::Task {
+                    contract: c.to_string(),
+                    task_id: id,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(query(&s, 2).status, TaskStatus::Waiting);
+
+    // Delayed promotion must retain the wait's original height and FIFO slot.
+    for height in 5..=7 {
+        set_base(&mut s, "2");
+        let report = rt.run_block(&mut s, height, &mut host).unwrap();
+        assert_eq!(report.promotions, u32::from(height == 5));
+        assert_eq!(report.polls, 0);
+        assert_eq!(report.price_pauses, u32::from(height == 7));
+        let public = query(&s, height);
+        assert_eq!(public.inbox, Some(resolution.clone()));
+        assert_eq!(public.wait, Some(wait.clone()));
+        assert_eq!(public.state, Some(state.clone()));
+        assert_eq!(public.last_attempt, Some(2));
+        assert_eq!(rt.task(&s, &c, id, height).unwrap().ready_at, 4);
+        assert_eq!(
+            public.status,
+            if height == 7 {
+                TaskStatus::Paused {
+                    reason: PauseReason::PriceLimit,
+                    resume: ResumeState::Runnable,
+                }
+            } else {
+                TaskStatus::Runnable
+            }
+        );
+        if height < 7 {
+            let bid_key = s
+                .range(
+                    Some(b"na2/bid/"),
+                    Some(b"na2/bid0"),
+                    cosmwasm_std::Order::Ascending,
+                )
+                .next()
+                .unwrap()
+                .0;
+            assert_eq!(&bid_key[bid_key.len() - 8..], original_sequence);
+        }
+    }
+    assert_eq!(
+        rt.task(&s, &c, id, 7).unwrap().status,
+        ExecutionStatus::Paused
+    );
+    set_base(&mut s, "1");
+    rt.manage(
+        &api,
+        &mut s,
+        7,
+        &c,
+        SchedulerMsg::ResumeTask {
+            task_id: id,
+            actor: c.to_string(),
+        },
+        &mut host,
+    )
+    .unwrap();
+    let resumed = query(&s, 7);
+    assert_eq!(resumed.status, TaskStatus::Runnable);
+    assert_eq!(resumed.inbox, Some(resolution.clone()));
+    assert_eq!(
+        rt.task(&s, &c, id, 7).unwrap().status,
+        ExecutionStatus::Runnable
+    );
+    host.outcome = PollOutcome::Complete {
+        output: Binary::default(),
+    };
+    assert_eq!(rt.run_block(&mut s, 8, &mut host).unwrap().polls, 1);
+    let request: PollRequest = cosmwasm_std::from_json(s.get(b"user/request").unwrap()).unwrap();
+    assert_eq!(request.step, PollStep::Resume { state, resolution });
+    assert_eq!(query(&s, 8).status, TaskStatus::Completed);
+}
+
+#[test]
 fn lowered_bid_grace_counts_from_last_poll() {
     let (mut rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);

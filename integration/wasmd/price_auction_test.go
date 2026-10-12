@@ -90,11 +90,14 @@ func TestCongestionRaisesPriceAndPausesLowBidder(t *testing.T) {
 		require.NotNil(t, price)
 		for _, event := range ctx.EventManager().Events() {
 			if event.Type == "async_poll" {
+				priceAttributes := 0
 				for _, attr := range event.Attributes {
 					if attr.Key == "price" {
+						priceAttributes++
 						require.Equal(t, price["old"], attr.Value, "polls use the frozen block price")
 					}
 				}
+				require.Equal(t, 1, priceAttributes, "every poll emits exactly one price attribute")
 			}
 		}
 		return price

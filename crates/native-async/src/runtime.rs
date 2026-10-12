@@ -1093,7 +1093,19 @@ impl Runtime {
             let seq = u64::from_be_bytes(key[key.len() - 8..].try_into().unwrap());
             s.remove(&key);
             if !terminal(&t) && t.status != ExecutionStatus::Paused && h < t.expires_at {
-                let f = host::load(s, &Addr::unchecked(&r.contract), r.id)?;
+                let addr = Addr::unchecked(&r.contract);
+                let mut f = host::load(s, &addr, r.id)?;
+                // Resolve matured waits before price maintenance can pause them.
+                // An authenticated result already in the inbox takes precedence.
+                if t.inbox.is_none() {
+                    t.inbox = match t.wait {
+                        Some(Wait::Height { .. }) => Some(Resolution::Timer {}),
+                        Some(Wait::Operation { .. }) => Some(Resolution::Timeout {}),
+                        None => None,
+                    };
+                }
+                f.status = TaskStatus::Runnable;
+                host::save(s, &addr, &f)?;
                 // Promotion preserves the original queue position even when
                 // newer deliveries already entered the same readiness height.
                 ready_with_sequence(s, &mut t, f.max_gas_price, ready_at, seq)?;

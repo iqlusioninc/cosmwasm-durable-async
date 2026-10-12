@@ -572,6 +572,65 @@ func TestOverdueTimerPricePausesAfterPromotion(t *testing.T) {
 	require.Nil(t, paused.QueueKey)
 }
 
+// A resolved timer or timeout remains public while priced out and paused, then
+// explicit resume must keep it runnable and pass it to the next real Wasm poll.
+func TestMaturedWaitPricePauseResumeParity(t *testing.T) {
+	for _, kind := range []string{"height", "operation"} {
+		t.Run(kind, func(t *testing.T) {
+			h := newFaultHarness(t)
+			h.k.Config.PriceGraceBlocks = 3
+			require.NoError(t, h.k.InitState(h.ctx))
+			h.start(t, 80_000_000, 100)
+			h.block(11)
+			waiting := h.task(t, 1)
+			wait := map[string]any{"height": map[string]any{"height": 12}}
+			wantResolution := &Resolution{Timer: &struct{}{}}
+			if kind == "operation" {
+				wait = map[string]any{"operation": map[string]any{"resolver": waiting.Control, "deadline": 12, "max_result_bytes": 256}}
+				wantResolution = &Resolution{Timeout: &struct{}{}}
+			}
+			var response PollResponse
+			require.NoError(t, json.Unmarshal(marshal(map[string]any{"outcome": map[string]any{"pending": map[string]any{"state": waiting.State, "wait": wait}}, "messages": []any{}}), &response))
+			require.NoError(t, h.k.stage(h.ctx, &waiting, response))
+			originalSequence := waiting.ReadySequence
+			require.NoError(t, h.k.UpdateBudget(h.ctx, waiting.Owner, UpdateBudgetMsg{TaskID: 1, Actor: waiting.Control, GasPerPoll: waiting.GasPerPoll, MaxGasPrice: "0.001", Refund: waiting.Refund}))
+			query := func() TaskResponse {
+				raw, err := h.k.Query(h.ctx, marshal(map[string]any{"task": map[string]any{"contract": waiting.Owner, "task_id": 1}}))
+				require.NoError(t, err)
+				var public TaskResponse
+				require.NoError(t, json.Unmarshal(raw, &public))
+				return public
+			}
+			require.Equal(t, TaskStatus{Kind: "waiting"}, query().Status)
+			// Process the overdue wait one block late; grace still starts at 12.
+			for height := int64(13); height <= 15; height++ {
+				h.k.store(h.ctx).Set([]byte("base_price"), []byte("0.004"))
+				h.block(height)
+				got, public := h.task(t, 1), query()
+				require.Equal(t, uint64(12), got.ReadyAt)
+				require.Equal(t, originalSequence, got.ReadySequence)
+				require.Equal(t, wantResolution, public.Inbox)
+				require.Equal(t, waiting.Wait, public.Wait)
+				require.Equal(t, waiting.State, public.State)
+				require.Equal(t, uint64(11), *public.LastAttempt)
+				wantStatus := TaskStatus{Kind: "runnable"}
+				if height == 15 {
+					wantStatus = TaskStatus{Kind: "paused", Reason: "price_limit", Resume: "runnable"}
+				}
+				require.Equal(t, wantStatus, public.Status)
+			}
+			h.k.store(h.ctx).Set([]byte("base_price"), []byte("0.001"))
+			require.NoError(t, h.k.Management(h.ctx, waiting.Owner, marshal(map[string]any{"resume_task": map[string]any{"task_id": 1, "actor": waiting.Control}})))
+			require.Equal(t, TaskStatus{Kind: "runnable"}, query().Status)
+			require.Equal(t, wantResolution, query().Inbox)
+			h.block(16)
+			require.Equal(t, TaskStatus{Kind: "completed"}, query().Status)
+			require.Equal(t, uint64(16), *query().LastAttempt)
+			require.NoError(t, h.k.ValidateState(h.ctx))
+		})
+	}
+}
+
 func TestPricePausedTaskStillExpires(t *testing.T) {
 	ctx, k, keepers := setup(t)
 	k.Config.PriceGraceBlocks = 0

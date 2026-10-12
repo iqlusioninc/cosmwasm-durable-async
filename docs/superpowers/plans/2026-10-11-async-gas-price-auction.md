@@ -227,4 +227,3 @@ Add a `"bid_components"` array: `{"bid":"0","key":"fffffffffffffffffffffffffffff
 - [ ] **Step 4: Full verification.** `cargo test --workspace --all-features` (0 failed), `cargo clippy --workspace --all-features --all-targets` (no output), rebuild artifacts, `bash integration/wasmd/test.sh` (exit 0).
 
 - [ ] **Step 5: Commit** `test(wasmd): end-to-end congestion pricing; docs`.
-
