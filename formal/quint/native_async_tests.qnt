@@ -1,0 +1,180 @@
+module native_async_tests {
+  import native_async.* from "./native_async"
+
+  pure val one = register(initial(true, 1), 1, 1, 2, 1)
+  pure val pollingTask = inspect(begin(one))
+  // Catch omitted registration/fee/escrow accounting, not a constructor shape.
+  run registrationTest = assert(one.deposits == 8 and one.fees == 1 and
+    one.tasks.get(1).balance == 6 and one.tasks.get(1).lease == 1)
+  run contributorCannotResumeTest = {
+    val paused = finish(pollingTask, "rollback", 1, 0)
+    val funded = fund(paused, 1, 2)
+    assert(funded.tasks.get(1).balance == 6 and
+      funded.tasks.get(1).status == "paused" and
+      control(funded, 1, 2, "resume", 0, false) == funded and
+      control(funded, 1, 2, "cancel", 0, false) == funded and
+      funded.tasks.get(1).refund == 1)
+  }
+  run zeroPriceFlightGuardTest = {
+    val p = inspect(begin(register(initial(true, 0), 1, 1, 0, 1)))
+    assert(p.flight == 1 and p.tasks.get(1).reserve == 0 and
+      control(p, 1, 1, "cancel", 0, false) == p and
+      control(p, 1, 1, "policy", 2, false) == p and
+      control(p, 1, 1, "resume", 0, false) == p)
+  }
+  run acceptedInboxSurvivesFailedPollTest = {
+    val waiting = finish(pollingTask, "operation", 1, 3)
+    val accepted = deliver(waiting, 1, 2, 1)
+    val nextPoll = inspect(maintain(begin(finalize(accepted)), 1))
+    val failed = finish(nextPoll, "rollback", 1, 0)
+    assert(waiting.tasks.get(1).wait == "operation" and
+      accepted.tasks.get(1).inbox == 1 and nextPoll.flight == 1 and
+      failed.tasks.get(1).inbox == 1 and
+      failed.tasks.get(1).continuation == 1 and failed.effects == 1 and
+      failed.tasks.get(1).consumed == 0 and failed.fees == 3)
+  }
+  run acceptedResultBeatsDeadlineTest = {
+    val waiting = finish(pollingTask, "operation", 1, 2)
+    val accepted = deliver(waiting, 1, 2, 1)
+    val matured = maintain(begin(finalize(accepted)), 1)
+    assert(matured.height == 2 and matured.tasks.get(1).inbox == 1 and
+      deliver(matured, 1, 2, 1) == matured and
+      deliver(waiting, 1, 1, 1) == waiting and
+      deliver(waiting, 1, 2, 0) == waiting)
+  }
+  run duplicateHeightPollRejectedTest = {
+    val yielded = finish(pollingTask, "yield", 1, 0)
+    val promoted = maintain(yielded, 1)
+    assert(promoted.tasks.get(1).ready == 2 and
+      inspect(promoted).flight == 0 and promoted.polls == 1)
+  }
+  run maturedWaitPricePauseResumeTest = {
+    val timer = finish(pollingTask, "timer", 1, 2)
+    val cheap = control(timer, 1, 1, "policy", 0, false)
+    val mature = maintain(begin(finalize(cheap)), 1)
+    val paused = maintain(begin(finalize(mature)), 1)
+    val raised = control(paused, 1, 1, "policy", 2, false)
+    val resumed = control(raised, 1, 1, "resume", 0, false)
+    assert(paused.tasks.get(1).status == "paused" and
+      paused.tasks.get(1).inbox == 2 and resumed.tasks.get(1).inbox == 2 and
+      resumed.tasks.get(1).continuation == 1 and resumed.tasks.get(1).ready == 4)
+  }
+  run expiryBoundaryWaitRejectedTest = {
+    val rejected = finish(pollingTask, "operation", 1, 4)
+    assert(rejected.tasks.get(1).status == "paused" and
+      rejected.tasks.get(1).reason == "invalid" and rejected.effects == 0 and
+      rejected.tasks.get(1).continuation == 0 and rejected.fees == 2)
+  }
+  run restoreMetadataRejectedTest = {
+    val saved = begin(one)
+    val bad = saved.with("queue", Set())
+    assert(checkpointValid(saved) and not(checkpointValid(bad)) and
+      restore(initial(true, 1), bad, true) == initial(true, 1))
+  }
+  run restoreNextStepTest = {
+    val waiting = finish(pollingTask, "operation", 1, 3)
+    val live = finalize(deliver(waiting, 1, 2, 1))
+    val restored = restore(initial(true, 1), live, true)
+    val nextLive = inspect(maintain(begin(live), 1))
+    val nextRestored = inspect(maintain(begin(restored), 1))
+    assert(restored == live and nextLive.flight == 1 and
+      finish(nextRestored, "complete", 1, 0) ==
+        finish(nextLive, "complete", 1, 0))
+  }
+  run visitCapContentionTest = {
+    val three = register(register(one, 2, 1, 2, 1), 3, 2, 1, 1)
+    val b1 = begin(three)
+    val y1 = finish(inspect(b1), "yield", 1, 0)
+    val y2 = finish(inspect(y1), "yield", 1, 0)
+    val b2 = maintain(maintain(begin(finalize(y2)), 1), 2)
+    val z1 = finish(inspect(b2), "yield", 1, 0)
+    val z2 = finish(inspect(z1), "yield", 1, 0)
+    assert(y2.visits == 2 and y2.gas == 2 and y2.gas < blockGas and
+      y2.tasks.get(3).last == 0 and inspect(y2).flight == 0 and
+      z2.visits == 2 and z2.gas == 2 and z2.tasks.get(3).last == 0)
+  }
+  run fixedContractRoundRobinTest = {
+    val twoOwners = register(register(initial(false, 1), 1, 1, 1, 1), 2, 1, 2, 1)
+    val three = register(twoOwners, 3, 2, 2, 1)
+    val first = inspect(begin(three))
+    val second = inspect(finish(first, "yield", 1, 0))
+    assert(first.flight == 1 and second.flight == 3)
+  }
+  run graceAgeSurvivesPolicyEditTest = {
+    val low = register(initial(true, 1), 1, 1, 0, 1)
+    val young = maintain(begin(low), 1)
+    val edited = control(begin(finalize(young)), 1, 1, "policy", 0, false)
+    val aged = maintain(edited, 1)
+    assert(young.tasks.get(1).status == "ready" and
+      aged.tasks.get(1).status == "paused" and aged.tasks.get(1).reason == "price")
+  }
+  run leaseExtensionPaysStorageTest = {
+    val extended = control(one, 1, 1, "lease", 0, false)
+    assert(extended.tasks.get(1).expiry == 5 and extended.deposits == 9 and
+      extended.fees == 2 and extended.tasks.get(1).lease == 1)
+  }
+  run applicationFailureCommitsAndRefundsTest = {
+    val failed = finish(pollingTask, "appfail", 1, 0)
+    assert(failed.effects == 1 and failed.tasks.get(1).status == "failed" and
+      failed.refunds == 5 and failed.fees == 3 and held(failed) == 0)
+  }
+  run generationMetadataRejectedTest = {
+    val bad = begin(one).with("readyIndex", Set((1, 9, 1)))
+    assert(not(checkpointValid(bad)))
+  }
+  run blockStartPriceAndUpdateTest = {
+    val first = fund(fund(register(initial(true, 4), 1, 1, 4, 2), 1, 2), 1, 2)
+    val p1 = inspect(begin(register(first, 2, 2, 4, 1)))
+    val p2 = inspect(finish(p1, "yield", 2, 0))
+    val ended = finalize(finish(p2, "complete", 1, 0))
+    assert(p1.tasks.get(1).reserve == 8 and p2.tasks.get(2).reserve == 4 and
+      ended.price == 4 and ended.base == 5 and ended.gas == 3 and
+      conservationOf(ended))
+  }
+  run fixedPriceDoesNotUpdateTest = {
+    val p = inspect(begin(register(initial(false, 2), 1, 1, 2, 1)))
+    val ended = finalize(finish(p, "complete", 0, 0))
+    assert(ended.base == 2 and ended.price == 2 and ended.fees == 2)
+  }
+  run expiredTaskCannotPollTest = {
+    val b1 = begin(one)
+    val b2 = begin(finalize(b1))
+    val b3 = begin(finalize(b2))
+    val b4 = begin(finalize(b3))
+    val expired = maintain(b4, 1)
+    assert(inspect(b4).flight == 0 and expired.tasks.get(1).status == "expired" and
+      expired.refunds == 6 and expired.fees == 2 and held(expired) == 0)
+  }
+  run corruptAccountingRestoreRejectedTest = {
+    val bad = one.with("deposits", 9)
+    assert(not(checkpointValid(bad)) and restore(initial(true, 1), bad, true) == initial(true, 1))
+  }
+  run acceptedInboxConsumedOnceTest = {
+    val waiting = finish(pollingTask, "operation", 1, 3)
+    val accepted = deliver(waiting, 1, 2, 1)
+    val p = inspect(maintain(begin(finalize(accepted)), 1))
+    val consumed = finish(p, "yield", 1, 0)
+    assert(consumed.tasks.get(1).accepted == 1 and consumed.tasks.get(1).consumed == 1 and
+      consumed.tasks.get(1).inbox == 0 and deliver(consumed, 1, 2, 1) == consumed)
+  }
+  run unexpiredOperationTimeoutTest = {
+    val waiting = finish(pollingTask, "operation", 1, 2)
+    val timedOut = maintain(begin(finalize(waiting)), 1)
+    assert(timedOut.height == 2 and timedOut.tasks.get(1).expiry == 4 and
+      timedOut.tasks.get(1).inbox == 2 and timedOut.tasks.get(1).status == "ready" and
+      deliver(timedOut, 1, 2, 1) == timedOut)
+  }
+  run pricedOutInspectionDoesNotPollTest = {
+    val low = begin(register(initial(true, 1), 1, 1, 0, 1))
+    val inspected = inspect(low)
+    assert(inspected.visits == 1 and inspected.flight == 0 and inspected.gas == 0 and
+      inspected.tasks.get(1).status == "ready" and inspected.phase == "closed")
+  }
+  run prunedIdentityCannotBeReusedTest = {
+    val completed = finish(pollingTask, "complete", 1, 0)
+    val pruned = maintain(begin(finalize(completed)), 1)
+    val idle = finalize(pruned)
+    assert(pruned.tasks.get(1).status == "pruned" and
+      register(idle, 1, 2, 2, 1) == idle and pruned.tasks.get(1).identity == 1)
+  }
+}
