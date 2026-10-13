@@ -325,3 +325,198 @@ Its startup printed Apalache 0.62.1 build `a321771` and a warning about vulnerab
 pre-22 protobuf generated code in gRPC reflection. That warning was not suppressed
 or patched here. It is a separate development-backend dependency concern from
 the npm `adm-zip` findings above; neither is a runtime contract finding.
+
+## Legacy delayed services and IBC (PR1–PR3)
+
+`service_waits.qnt` and `ibc_waits.qnt` are separate source-derived abstractions
+of PR1 and PR3. Each exports `init`, `step`, `safety`, `correlation`,
+`authorization`, and `retainedState`, plus pure transitions for deterministic
+scenarios. Neither imports the native scheduler, auction, funding, escrow or
+price model. Callbacks and public expiry require externally submitted
+transactions; advancing height/time alone leaves a wait outstanding.
+
+The service model follows PR1
+[`demo-service`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/d555ae00919a01050770f47fbbd0dd498a33481e/contracts/demo-service/src/lib.rs),
+[`fulfill`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/d555ae00919a01050770f47fbbd0dd498a33481e/contracts/fulfill/src/lib.rs),
+the inherited
+[`runtime`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/d555ae00919a01050770f47fbbd0dd498a33481e/crates/durable-runtime/src/runtime.rs),
+and the
+[`driver`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/d555ae00919a01050770f47fbbd0dd498a33481e/scripts/service-driver.py).
+The deployment precondition fixes owner 1, immutable bound workflow 9, payment
+service 2 and shipment service 3. `beginRequest` requires the bound workflow;
+retained `(workflow, sequence)` tombstones prohibit duplicate requests even
+after dequeue/pruning. Per-service request IDs order each queue independently.
+Two workflows may share an order ID and overwrite its `paymentSeen` value.
+
+`State.chain` separates application/runtime/queue state from the driver's
+persisted `journal`, selected request and command. `ready` is ephemeral first
+broadcast permission: restart discards it, while preserving an ambiguous
+Intent or saved hash. Scope mismatch, transport ambiguity, missing hash and
+unconfirmed/unindexed/zero-height receipts cannot automatically rebroadcast.
+Confirmed success/failure or CheckTx rejection permits fresh queue/workflow
+rediscovery. Driver preparation chooses Deliver, Expire or Prune from that
+fresh state. Signing, transaction execution and receipt discovery are abstract
+environment events, not an RPC/client implementation. The model abstracts one
+serial worker and assumes its per-journal lock and filesystem persistence work.
+The source writes/fsyncs a sibling temporary file, atomically replaces the
+journal, then fsyncs its parent directory; no OS/power-loss experiment was run.
+
+Service success consumes the current queue row and either starts shipment or
+completes. A remote error commits terminal failure. An empty payment reference
+commits both `paymentSeen=0` and application failure; empty shipment tracking
+currently completes. Malformed/oversized results, VM aborts and downstream Begin
+failure preserve the pretransaction chain state. Public expiry at the exact
+deadline commits failure but retains the service row until a separate Prune.
+Prune cannot remove a current wait merely because its deadline elapsed.
+The `external` observation is a ghost for independent remote effects, not local
+business storage; local expiry never reverses it. No real payment, shipping
+proof, token movement, contract refund or signer-fee refund is modeled.
+
+The IBC model follows PR3
+[`ibc-query`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/1d8adb79847ddd764693fba891a64450d70cd6ca/contracts/ibc-query/src/lib.rs)
+and its
+[`protocol guide`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/1d8adb79847ddd764693fba891a64450d70cd6ca/docs/ibc-example.md).
+Connection/version/order/port validation is abstracted by `connect(valid)`;
+one channel binds permanently, and Close cannot enable rebinding. Endpoints 1
+and 2 encode both channel and contract-port identity. Pending intents retain
+application packet correlation/data, endpoints and timeout. Packet data is a
+small representative for saved bytes: equality abstracts bytewise matching,
+but distinct encodings of the same decoded value are not enumerated. The model
+does not implement JSON canonicalization or unknown-field rejection. The nested shared Correlation
+schema actually accepts unknown fields, despite the guide's broader wording.
+
+IBC-core authentication is an explicit environment assumption. `callback`
+requires an authenticated acknowledgement/timeout proof and a matching emitted
+host commitment, including the chain-generated `packetSequence`. Consuming a
+commitment prevents both ack and timeout from committing for that packet.
+This abstract gate does not verify cryptographic proofs, relayers, consensus,
+connection trust or real IBC replay handling. The contract's `matches` check
+intentionally **does not compare packet sequence**. The direct-entrypoint
+`adapterFixture` bypasses host admission, as Rust mocks do: changing only packet
+sequence still advances through that fixture, while `callback` rejects it.
+Public Deliver requires the actual self sender (9); a relayer address or a
+claimed sender field is not authority. Valid self delivery is an internal part
+of the atomic callback; normal `step` only attempts unauthorized public calls.
+
+Source and remote clocks advance independently. At/after the source deadline,
+an accepted callback expires the current wait regardless of acknowledgement
+success. An authenticated early remote timeout removes pending intent and host
+commitment but leaves runtime Waiting. Thus `Waiting => pending` is deliberately
+not an invariant. A later local Expire can resolve it. Public local expiry does
+not cancel the remote packet: its host commitment remains until an authenticated
+late outcome settles at IBC core, without reactivating the local workflow.
+Close retains outstanding waits, refuses new sends, and turns a predeadline ack
+into terminal `channel_closed` failure. Remote errors and invalid acks also
+commit failure. The honest-peer scenario produces `5 -> 10 -> 20`; `peer_lie`
+shows a valid authenticated peer value 7 being accepted. Provenance alone does
+not establish arithmetic truth or exactly-once external effects.
+
+Both abstractions **assume SDK transaction/cache atomicity**. Dequeue/pending
+deletion, application writes, continuation changes, self execution, outbound
+messages and relevant IBC host commitment changes commit together or restore
+the transaction snapshot on abort. Atomic single-step Quint transitions encode
+that assumption; they do not prove an SDK cache or a Wasm engine implements it.
+Restart preserves modeled durable state and drops service invocation permission;
+there is no byte serialization, apphash, node-restart or state-sync proof.
+
+## PR2 compiled-artifact correspondence and remaining obligations
+
+PR2's
+[`compiled.rs`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/f60a1ba85b94d221870265f7ecaca0405dc0d552/tools/vm-tests/tests/compiled.rs)
+contains five implementation tests, freshly passed by the controller for the
+rebuilt normalized `fulfill_example.wasm` SHA-256
+`c01e95b82e68444a16b462ac75854f585c4e0000be38105707b8ec53b01e10a7`:
+
+| Implementation fixture | Related abstract obligation |
+| --- | --- |
+| `compiled_workflow_restores_state_across_fresh_invocations` | Two committed waits and durable successor state across invocations |
+| `unauthorized_and_stale_callbacks_do_not_mutate_storage` | Sender and exact current-sequence rejection |
+| `deadline_boundary_and_application_failure_execute_in_wasm` | Exact deadline rejection/expiry; empty-reference application write commits |
+| `callback_exhausts_vm_gas_when_budget_is_insufficient` | Distinguish VM abort from application failure; gas-abort branch is abstract |
+| `report_callback_payload_costs` | Payload-cost observation only; no calibrated gas/size theorem |
+
+The gas-depletion fixture deliberately discards the failed VM backend: it does
+not establish host rollback. These mock-host VM tests do not discharge SDK
+transaction atomicity or outbound-message execution. Quint interprets no Wasm
+and proves no macro/compiler lowering, artifact identity, capability validation,
+ABI compatibility, runtime metering correctness, gas calibration, full-width
+overflow handling or arbitrary checkpoint encoding. These remain independent
+implementation and host obligations, even when a bounded abstract run passes.
+
+Separate fresh review evidence: PR1 executed 31 Rust integration-test executions
+(including intentionally repeated baseline scenarios), plus 7 Python driver
+tests; these are **not 31 newly added tests**, real signing, or SDK/VM execution.
+PR3 passed 10 native contract tests, 6 focused public-API tests and 2 compiled IBC
+VM tests. Its rebuilt current IBC artifact hash was
+`1a1bd09bd659cda39560870e2add008942dcfafa51f066c2a1e091d83ded1dd9`.
+The historical
+[`ibc-smoke-result.json`](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/1d8adb79847ddd764693fba891a64450d70cd6ca/docs/ibc-smoke-result.json)
+names a different IBC artifact,
+`e4bea19387c8971e3d7484f9c589d7c72a2039994d683481f872a86aa4c55116`;
+its chain result is not evidence of a fresh chain run for the rebuilt hash.
+Compiled IBC fixtures manually dispatch self messages and prove neither IBC
+authentication nor SDK transaction rollback. No runtime suite was rerun by this
+formal-model task; those source-review results are separate evidence.
+
+## Reproduce legacy checks and controls
+
+From `formal/quint`, with pinned Quint 0.33.0 and explicit TypeScript backend:
+
+```sh
+./node_modules/.bin/quint parse service_waits.qnt
+./node_modules/.bin/quint parse service_waits_tests.qnt
+./node_modules/.bin/quint parse ibc_waits.qnt
+./node_modules/.bin/quint parse ibc_waits_tests.qnt
+./node_modules/.bin/quint typecheck service_waits.qnt
+./node_modules/.bin/quint typecheck service_waits_tests.qnt
+./node_modules/.bin/quint typecheck ibc_waits.qnt
+./node_modules/.bin/quint typecheck ibc_waits_tests.qnt
+./node_modules/.bin/quint test service_waits_tests.qnt --backend=typescript --seed=1 --max-samples=1
+./node_modules/.bin/quint test ibc_waits_tests.qnt --backend=typescript --seed=1 --max-samples=1
+./node_modules/.bin/quint run service_waits.qnt --backend=typescript --invariant=safety --witnesses sawAccepted sawRollback sawRestart sawAmbiguous --seed=20261014 --max-samples=500 --max-steps=80 --verbosity=1
+./node_modules/.bin/quint run ibc_waits.qnt --backend=typescript --invariant=safety --witnesses sawAccepted sawRollback sawRestart sawEarlyTimeout --seed=20261015 --max-samples=500 --max-steps=80 --verbosity=1
+```
+
+These models bound workflow IDs to two non-reusable slots, sequences to two
+waits, height/source/remote clocks to 0–6, and deadlines to current clock + 2
+(at most 7 for a second wait). Service order IDs are 1/2, references 0/1,
+per-service request IDs 1/2, external observations 0–2 and broadcasts at most 8.
+IBC starts with value 0/5; honest responses double, dishonest responses supply
+7, so modeled request/output values stay at most 20. Four possible packets
+give host packet IDs 1–4. Abort/restart counters are unbounded verification
+ghosts limited by trace depth. These are exploration bounds, not production
+limits. Byte sizes, production active-count caps and u64 counter/deadline
+overflow are abstracted by accepted/rejected outcome categories. No fairness,
+unconditional expiry, driver availability or exhaustive state exploration is
+asserted. The simulation relation explores multiple workflows and driver/clock
+events; direct malformed-packet fixture calls remain deterministic tests.
+
+| Final portable check | Observed result |
+| --- | --- |
+| All nine model/test/profile files parse and typecheck | Exit 0 |
+| Deterministic pricing / native / service / IBC suites | 28 / 29 / 16 / 14 pass (87 total) |
+| Service seed 20261014, 500 traces, depth 80 | No safety violation; accepted 136, rollback 165, restart 497, ambiguous journal 191 witnesses |
+| IBC seed 20261015, 500 traces, depth 80 | No safety violation; accepted 57, rollback 81, restart 500, early timeout 26 witnesses |
+
+Witness counts are traces containing the predicate, not transition counts or
+coverage guarantees. No Apalache/TLC result is claimed for these legacy models.
+
+All three controls below must exit **1 with `Invariant violated`**. They are
+excluded from normal `step`; each failed at its first transition in the final
+run with seed 1, one sample, depth 2. Full counterexamples are written locally.
+
+```sh
+./node_modules/.bin/quint run service_waits.qnt --backend=typescript --init=weakSequenceInit --step=weakSequenceStep --invariant=safety --seed=1 --max-samples=1 --max-steps=2 --out-itf=/private/tmp/service-sequence-negative.itf.json --verbosity=1
+./node_modules/.bin/quint run ibc_waits.qnt --backend=typescript --init=weakHostInit --step=weakHostStep --invariant=safety --seed=1 --max-samples=1 --max-steps=2 --out-itf=/private/tmp/ibc-host-negative.itf.json --verbosity=1
+./node_modules/.bin/quint run ibc_waits.qnt --backend=typescript --init=weakDataInit --step=weakDataStep --invariant=safety --seed=1 --max-samples=1 --max-steps=2 --out-itf=/private/tmp/ibc-data-negative.itf.json --verbosity=1
+```
+
+The service mutation accepts supplied sequence 2 while current sequence is 1,
+violating `correlation`. The host mutation omits IBC admission and advances on
+an unauthenticated callback, violating `authorization`; this demonstrates why
+IBC-core authentication is an assumption Quint cannot discharge. The data
+mutation weakens adapter intent matching in a **direct-entrypoint fixture**:
+packet data 6 differs from saved 5, so the accepted receipt has `matched=false`
+and violates `correlation`. Real host commitment authentication would reject
+that altered packet before contract invocation. None of these controls is a
+new runtime exploit or evidence that the reviewed source omits its checks.
