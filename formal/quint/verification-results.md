@@ -1,9 +1,10 @@
 # Quint verification evidence — 2026-10-12
 
-Task 4's complete portable run used the final Task 1–3 models, unchanged from
-`2128e438ba0b2df7daaf90e05f719b9c991fd1d6`. Tooling/report changes do not alter
-runtime code. Results below separate fresh portable execution from prior bounded
-backend and implementation evidence. Final independent whole-branch review is pending.
+The current portable receipt includes the final F1/F2 model corrections after
+whole-branch review of `da59262`: selected expiry settlement and preserved auction
+wait readiness/FIFO. No runtime code changed. Results below separate fresh portable
+execution from historical bounded backend and implementation evidence. Independent
+scoped final-fix re-review is pending; runtime findings N1/N2/R1 remain open.
 
 ## Fresh portable run
 
@@ -12,7 +13,9 @@ Observed environment: Node **v26.11.1**, npm **11.20.0**, project-local Quint
 From `/private/tmp/cosmwasm-quint.LDAo7r`:
 
 ```sh
-bash formal/quint/verify.sh > /private/tmp/cosmwasm-adversarial.LDAo7r/task4-portable.log 2>&1
+cd formal/quint
+npm run verify > /private/tmp/cosmwasm-quint-final-fix-portable.log 2>&1
+npm test > /private/tmp/cosmwasm-quint-final-fix-npm-test.log 2>&1
 ```
 
 The portable command exits **0**. All nine top-level `.qnt` files parse/typecheck.
@@ -24,15 +27,15 @@ commands and semantic domains are in [README.md](README.md).
 | Deterministic suite | Passing cases | Observed elapsed |
 | --- | --- | --- |
 | `pricing_tests.qnt` | 28 | 3 ms |
-| `native_async_tests.qnt` | 29 | 41 ms |
+| `native_async_tests.qnt` | 37 | 60 ms |
 | `service_waits_tests.qnt` | 16 | 10 ms |
-| `ibc_waits_tests.qnt` | 14 | 10 ms |
-| Total | **87**, none failed | No implementation suite inferred |
+| `ibc_waits_tests.qnt` | 14 | 9 ms |
+| Total | **95**, none failed | No implementation suite inferred |
 
 | Simulation | Seed | Samples / depth | Result, elapsed | Witness traces |
 | --- | --- | --- | --- | --- |
-| Native auction `init/step` | 20261012 | 1,000 / 80 | No violation, 6,717 ms | poll 552; accepted 3; rollback 84 |
-| Native fixed `fixedInit/step` | 20261013 | 500 / 80 | No violation, 3,443 ms | poll 249; accepted **0**; rollback 34 |
+| Native auction `init/step` | 20261012 | 1,000 / 80 | No violation, 6,812 ms | poll 552; accepted 3; rollback 84 |
+| Native fixed `fixedInit/step` | 20261013 | 500 / 80 | No violation, 3,431 ms | poll 249; accepted **0**; rollback 34 |
 | Service `init/step` | 20261014 | 500 / 80 | No violation | accepted 136; rollback 165; restart 497; ambiguous 191 |
 | IBC `init/step` | 20261015 | 500 / 80 | No violation | accepted 57; rollback 81; restart 500; early timeout 26 |
 
@@ -56,14 +59,20 @@ the first transition. The five state counterexamples are saved as ITF JSON under
 the temporary directory printed by the runner. Controls are excluded from normal
 `step`; they demonstrate check sensitivity, not new runtime exploit reproductions.
 
-Focused runner verification: `npm test` runs all 87 deterministic cases and
+Focused runner verification: `npm test` runs all 95 deterministic cases and
 `node --test verify.test.mjs`; ten runner checks pass, zero skipped. They use
 real local CLI fixtures to reject missing CLI, invalid model, failed invariant
 and parser errors masquerading as counterexamples, require correct diagnostic
 and status, reject mixed counterexample and unrelated CLI/Node permission errors,
 and reject unavailable explicit extended mode and unknown options.
 The unavailable-server test reserves then closes a local ephemeral port; it
-does not start/stop a backend. Full fresh output is summarized in the Task 4 report.
+does not start/stop a backend. Fresh output is retained in the npm log above.
+
+Focused TDD used `./node_modules/.bin/quint test native_async_tests.qnt
+--backend=typescript --seed=1 --max-samples=1`: before the model fix, 29 passed and
+eight failed with `Error [QNT508]: Assertion failed`; after the fix, all 37 passed.
+These deterministic scenarios supply the new expiry/delayed-promotion evidence.
+Unchanged seeded witness totals do not establish coverage of those new branches.
 
 ## Domains and proof limits
 
@@ -86,7 +95,7 @@ Native restore uses a separate durable projection, validates manifests/accountin
 rebuilds indexes and preserves ring history. Representative successor regressions
 are checked; full Rust/Go bisimulation is not established.
 
-## Fresh extended runner and implementation receipts
+## Historical extended runner and implementation receipts
 
 The controller ran the explicit extended path at runner commit `9cb9d2e`:
 
@@ -104,7 +113,11 @@ server belonged to another project and was not stopped or modified. This
 exercises the runner's successful extended path on the same model/boundary as
 the prior check; it is not a new restore, service/IBC or full-model proof. The
 subsequent runner fix only tightened negative-control output classification;
-no model or extended invocation changed.
+no model or extended invocation changed at that time. The later F1/F2 correction
+changes `inspect` and `finish` (including pending readiness allocation), as well as
+promotion/order. The retained `9cb9d2e` depth-one result applies only to its original
+accounting fixture/relation. No backend was started or rerun for the fixes, and no
+new symbolic evidence is claimed for the changed scheduling or promotion behavior.
 
 The controller also ran `CARGO_TARGET_DIR=/private/tmp/cosmwasm-quint-final-target.VlvP4z
 cargo test --workspace --all-features --locked` from this formal branch. Exit
@@ -133,8 +146,10 @@ localhost:8822 server, PID 83322, from `/private/tmp/lsm-lending`; it was not
 stopped/replaced. This checks one reachable poll-settlement fixture, six outcomes
 (yield, operation, timer, complete, application failure, rollback) × gas 0/1/2.
 `accountingInit/accountingStep`, live-state type and checked predicate are unchanged
-by the later checkpoint repair. That boundary never restores, so the retained
-result supplies **no new symbolic evidence for checkpoint reconstruction**.
+by the checkpoint repair that followed that check. The final F1/F2 wave subsequently
+changed transitions used by that relation. It was not symbolically rechecked.
+That original boundary never restores; the retained result supplies **no new
+symbolic evidence for checkpoint reconstruction or the final F1/F2 transitions**.
 
 | Other backend attempt | Actual outcome / limit |
 | --- | --- |
@@ -144,8 +159,8 @@ result supplies **no new symbolic evidence for checkpoint reconstruction**.
 | Transient scaled arithmetic workaround | Imported constant still eagerly evaluated; workaround removed |
 | Redundant dedicated-port 8837 retry | Canceled; `Received RST_STREAM ...`, exit 1; no additional result; owned child/listener removed, shared 8822 left running |
 
-No Apalache/TLC result exists for legacy service/IBC models. The fresh extended
-runner check above covers only native accounting depth one; the portable result
+No Apalache/TLC result exists for legacy service/IBC models. The historical extended
+runner check above covers only its original native accounting depth one; the portable result
 alone does not certify any symbolic check or omitted proof.
 
 ## Deferred development-tool concerns

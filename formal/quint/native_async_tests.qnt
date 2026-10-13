@@ -144,8 +144,104 @@ module native_async_tests {
     val b3 = begin(finalize(b2))
     val b4 = begin(finalize(b3))
     val expired = maintain(b4, 1)
-    assert(inspect(b4).flight == 0 and expired.tasks.get(1).status == "expired" and
+    assert(Set(true, false).forall(auction => {
+      val selected = inspect(b4.with("auction", auction))
+      selected.flight == 0 and selected.polls == 0 and selected.gas == 0 and
+        selected.tasks.get(1).status == "expired" and selected.refunds == 6 and
+        selected.fees == 2 and held(selected) == 0 and selected.queue == Set() and
+        selected.ring == List() and selected.readyIndex == Set() and
+        selected.dueIndex == Set() and conservationOf(selected)
+    }) and expired.tasks.get(1).status == "expired" and
       expired.refunds == 6 and expired.fees == 2 and held(expired) == 0)
+  }
+  // With maintenance omitted until H4, only task 1 has an extended live lease.
+  pure def expiryAfterGas(auction: bool): State = {
+    val two = register(register(initial(auction, 1), 1, 1, 2, 2), 2, 2, 1, 2)
+    val extended = control(two, 1, 1, "lease", 0, false)
+    val b1 = begin(extended)
+    val b2 = begin(finalize(b1))
+    val b3 = begin(finalize(b2))
+    finish(inspect(begin(finalize(b3))), "complete", 2, 0)
+  }
+  run expiredOversizedAuctionSettlesTest = {
+    val spent = expiryAfterGas(true)
+    val selected = inspect(spent)
+    assert(spent.gas == 2 and spent.queue == Set(2) and spent.refunds == 4 and
+      selected.tasks.get(2).status == "expired" and selected.refunds == 10 and
+      selected.fees == 7 and held(selected) == 0 and conservationOf(selected) and
+      selected.queue == Set() and selected.ring == List() and
+      selected.readyIndex == Set() and selected.dueIndex == Set() and
+      selected.flight == 0 and selected.polls == 1 and selected.gas == 2)
+  }
+  run expiredFixedInsufficientGasPreservesRingTest = {
+    val spent = expiryAfterGas(false)
+    val deferred = inspect(spent)
+    val settled = inspect(begin(finalize(deferred)))
+    assert(deferred.phase == "closed" and deferred.queue == Set(2) and
+      deferred.ring == List(2) and deferred.tasks.get(2).status == "ready" and
+      deferred.tasks.get(2).balance == 6 and deferred.tasks.get(2).lease == 1 and
+      deferred.refunds == 4 and deferred.fees == 6 and deferred.polls == 1 and
+      deferred.flight == 0 and deferred.gas == 2 and conservationOf(deferred) and
+      settled.tasks.get(2).status == "expired" and settled.refunds == 10 and
+      settled.fees == 7 and settled.queue == Set() and settled.ring == List() and
+      settled.flight == 0 and settled.polls == 1 and conservationOf(settled))
+  }
+  run auctionPendingReservesDueSlotTest = {
+    assert(Set("timer", "operation").forall(outcome => {
+      val waiting = finish(pollingTask, outcome, 1, 3)
+      waiting.tasks.get(1).status == "waiting" and waiting.tasks.get(1).ready == 3 and
+        waiting.tasks.get(1).order == 2 and waiting.sequence == 2 and
+        waiting.queue == Set() and waiting.dueIndex == Set((1, 1, 3))
+    }))
+  }
+  run delayedAuctionPromotionPreservesGraceTest = {
+    val cheap = control(finish(pollingTask, "timer", 1, 2), 1, 1, "policy", 0, false)
+    val skipped = begin(finalize(cheap))
+    val promoted = maintain(begin(finalize(skipped)), 1)
+    val paused = maintain(promoted, 1)
+    assert(promoted.height == 3 and promoted.tasks.get(1).ready == 2 and
+      promoted.tasks.get(1).order == 2 and promoted.sequence == 2 and
+      paused.tasks.get(1).status == "paused" and paused.tasks.get(1).reason == "price" and
+      paused.tasks.get(1).inbox == 2 and paused.polls == 1)
+  }
+  pure def twoDelayedWaits(firstDue: int): State = {
+    val two = register(one, 2, 2, 2, 1)
+    val first = finish(inspect(begin(two)), "timer", 1, firstDue)
+    val second = finish(inspect(first), "timer", 1, 2)
+    finalize(begin(finalize(second)))
+  }
+  run reverseMaintenancePreservesAuctionFifoTest = {
+    val live = twoDelayedWaits(2)
+    val promoted = maintain(maintain(begin(live), 2), 1)
+    assert(promoted.tasks.get(1).ready == 2 and promoted.tasks.get(2).ready == 2 and
+      promoted.tasks.get(1).order == 3 and promoted.tasks.get(2).order == 4 and
+      promoted.sequence == 4 and inspect(promoted).flight == 1)
+  }
+  run equalBidEarlierReadinessBeatsSequenceTest = {
+    val promoted = maintain(maintain(begin(twoDelayedWaits(3)), 1), 2)
+    assert(promoted.tasks.get(1).ready == 3 and promoted.tasks.get(1).order == 3 and
+      promoted.tasks.get(2).ready == 2 and promoted.tasks.get(2).order == 4 and
+      inspect(promoted).flight == 2)
+  }
+  run restoredDelayedWaitPreservesAuctionSuccessorTest = {
+    val live = twoDelayedWaits(2)
+    val restored = restore(initial(true, 9), checkpoint(live), true)
+    val nextLive = inspect(maintain(maintain(begin(live), 2), 1))
+    val nextRestored = inspect(maintain(maintain(begin(restored), 2), 1))
+    assert(restored != live and restored.dueIndex == Set((1, 1, 2), (2, 1, 2)) and
+      restored.tasks.get(1).ready == 2 and restored.tasks.get(1).order == 3 and
+      restored.tasks.get(2).order == 4 and nextRestored.flight == 1 and
+      nextLive.flight == 1 and finish(nextRestored, "complete", 1, 0) ==
+        finish(nextLive, "complete", 1, 0))
+  }
+  run delayedFixedPromotionAllocatesCurrentSlotTest = {
+    val p = inspect(begin(register(initial(false, 1), 1, 1, 1, 1)))
+    val timer = finish(p, "timer", 1, 2)
+    val skipped = begin(finalize(timer))
+    val promoted = maintain(begin(finalize(skipped)), 1)
+    assert(timer.sequence == 1 and promoted.height == 3 and
+      promoted.tasks.get(1).ready == 3 and promoted.tasks.get(1).order == 2 and
+      promoted.sequence == 2 and inspect(promoted).flight == 1)
   }
   run corruptAccountingRestoreRejectedTest = {
     val bad = checkpoint(one).with("deposits", 9)

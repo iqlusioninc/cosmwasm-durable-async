@@ -20,7 +20,7 @@ npm run verify
 ```
 
 Equivalently, after installation, run `bash formal/quint/verify.sh` from the
-repository root. It checks all nine model/test/profile files, all 87 deterministic
+repository root. It checks all nine model/test/profile files, all 95 deterministic
 cases, four seeded simulation profiles and six expected-failure controls covering
 all four families. It always selects the TypeScript evaluator. `npm test` runs
 the four deterministic suites and ten runner error-path tests; simulations and
@@ -133,7 +133,7 @@ Do not interpret these development-tool findings as runtime crate findings.
 `conservation`, `authority`, `polling`, `rollback`, `price`, and
 `restoreEquivalence`. This is an executable **intended-safety abstraction**, not
 a proof that the Rust or Go hosts implement it. `native_async_tests.qnt` contains
-29 deterministic scenarios; `native_profiles.qnt` provides bounded profiles and
+37 deterministic scenarios; `native_profiles.qnt` provides bounded profiles and
 two separately named negative controls. Neither negative control is reachable
 through the normal `step` or `tinyStep` relation.
 
@@ -174,12 +174,17 @@ Supporting implementation tests are `TestAcceptanceRealVMFaultRollback` in
 Wasm/SDK cache failure and gas-meter boundaries. These are separate implementation
 test obligations; this model's simulation and bounded results neither execute
 those tests nor prove SDK atomicity, VM metering correctness, or calibrated gas
-costs. No implementation suite was rerun for the checkpoint-only fix.
+costs. No implementation suite was rerun for the formal-model fixes.
 
 `fixedInit` models PR4's FIFO task order inside a round-robin contract ring,
 preserving the ring head on insufficient block gas. `init` models PR5's
-descending bid/FIFO order. Auction selection counts visits for inspections,
-scans past oversized tasks, and stops at an ineligible bid. A separate bounded
+descending bid, then readiness height, then FIFO sequence order. Auction pending
+waits reserve their due readiness height and sequence when staged; delayed
+promotion preserves both, including across checkpoint restoration. PR4 Go timer
+promotion instead allocates the current height and a new sequence. Auction
+selection counts visits for inspections, scans past live eligible oversized
+tasks, and stops at an ineligible bid. A selected expired entry settles immediately,
+including an oversized expired auction entry. A separate bounded
 maintenance pass pauses priced-out tasks after a one-height grace period using
 the preserved `max(ready, last)` age. Changing a bid does not reset this age.
 Maintenance may be skipped or exhausted, so no unconditional progress or
@@ -189,7 +194,9 @@ one gas unit remains unused each block. This is an allowed outcome, not a safety
 violation or a quantified attack-cost result.
 
 At an expired PR4 queue head, this model follows the Go host's gas-fit check and
-ring rotation before expiry handling. PR4 Rust checks expiry first and can leave
+ring rotation before immediate expiry settlement. Insufficient gas leaves the
+expired task queued with escrow held until a later selection or maintenance visit.
+PR4 Rust checks expiry first and can leave
 the same owner's live sibling at the ring head. That difference can change the
 next inspection under a visit cap; the fixed model is not exact correspondence
 for both hosts at this boundary.
@@ -311,6 +318,9 @@ reserving 2 coins. `accountingStep` nondeterministically finishes with each of
 six outcomes (yield, operation, timer, complete, application failure, rollback)
 and consumed gas 0, 1, or 2; pending deadlines are height 2. Depth 1 checks this
 boundary from that specific reachable fixture, not every possible poll state.
+The retained symbolic receipt predates the final F1/F2 corrections to inspection
+and pending-wait staging/promotion. It is evidence for the original fixture and
+relation only; no new symbolic result is claimed for the changed transitions.
 
 The exact observed invocation is retained in `verification-results.md`; it used
 Homebrew Java 21.0.12.1 because the system Java shim failed. Quint reused the
@@ -329,20 +339,24 @@ Observed results with Quint 0.33.0:
 
 | Check | Result |
 | --- | --- |
-| Native typechecks and deterministic scenarios | All three files typecheck; 29/29 tests pass |
-| Exact pricing suite | Prior check: 28/28 pass; helpers unchanged by checkpoint repair |
+| Native typechecks and deterministic scenarios | All three files typecheck; 37/37 tests pass |
+| Exact pricing suite | Fresh portable check: 28/28 pass; helpers unchanged |
 | Auction seed 20261012, 1,000 traces, depth 80 | No safety violation; poll witness 552, accepted delivery 3, rollback 84 |
 | Fixed seed 20261013, 500 traces, depth 80 | No safety violation; poll witness 249, accepted delivery 0, rollback 34 |
 | Both negative controls, seed 1, depth 2 | Expected invariant violations at the first transition, exit 1 |
-| Apalache accounting fixture, depth 1 | No violation found, 105,392 ms, exit 0 |
+| Historical Apalache accounting fixture, depth 1 | Original relation only: no violation found, 105,392 ms, exit 0; runner receipt at `9cb9d2e` also predates F1/F2 |
 | TLC on native profile | Failed before state exploration on u64 literal; no checked-state count |
 
-The checkpoint repair reran the native typechecks, 29 scenarios, both seeded
-simulations and both negative controls. It did not rerun pricing helpers or the
-symbolic backend: `accountingInit`, `accountingStep`, their live-state type and
-the checked safety predicate are unchanged, and that relation never restores.
-The prior depth-one accounting result therefore retains exactly its original
-scope; it provides no new bounded evidence for checkpoint reconstruction.
+The final F1/F2 correction reran all nine typechecks, 95 deterministic scenarios,
+all four seeded profiles and all six controls through the portable runner, plus
+ten npm runner checks. The eight added native scenarios cover oversized expiry,
+PR4 insufficient-gas deferral, reserved pending slots, delayed grace, reverse
+maintenance FIFO, readiness-before-sequence order, restored delayed waits and
+PR4 current-height promotion. The existing expiry case now checks settlement
+through inspection in both profiles. No symbolic backend was rerun. In particular,
+`accountingStep` calls the changed `finish` transition, so prior depth-one receipts
+remain scoped to their original model; they provide no new evidence for changed
+inspection, staging/promotion or checkpoint reconstruction.
 
 Witness counts measure visited traces, not exhaustiveness. In particular, the
 fixed-price simulation did not reach accepted delivery; deterministic scenarios
@@ -524,7 +538,7 @@ events; direct malformed-packet fixture calls remain deterministic tests.
 | Final portable check | Observed result |
 | --- | --- |
 | All nine model/test/profile files parse and typecheck | Exit 0 |
-| Deterministic pricing / native / service / IBC suites | 28 / 29 / 16 / 14 pass (87 total) |
+| Deterministic pricing / native / service / IBC suites | 28 / 37 / 16 / 14 pass (95 total) |
 | Service seed 20261014, 500 traces, depth 80 | No safety violation; accepted 136, rollback 165, restart 497, ambiguous journal 191 witnesses |
 | IBC seed 20261015, 500 traces, depth 80 | No safety violation; accepted 57, rollback 81, restart 500, early timeout 26 witnesses |
 

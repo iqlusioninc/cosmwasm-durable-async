@@ -139,9 +139,11 @@ module native_async {
       else if (t.status == "due" and t.ready <= s.height)
         saveTask(charged, id, t.with("status", "ready"))
       else if (t.status == "waiting" and t.due <= s.height)
-        saveTask(charged.with("sequence", s.sequence + 1), id, { ...t,
+        // PR5 reserved its due/FIFO slot at staging; PR4 Go enqueues now.
+        saveTask(charged.with("sequence", if (s.auction) s.sequence else s.sequence + 1), id, { ...t,
           status: "ready", inbox: if (t.inbox == 0) 2 else t.inbox,
-          ready: s.height, order: s.sequence + 1 })
+          ready: if (s.auction) t.ready else s.height,
+          order: if (s.auction) t.order else s.sequence + 1 })
       else if (s.auction and t.status == "ready" and t.bid < s.price and
         s.height - (if (t.ready > t.last) t.ready else t.last) >= 1)
         saveTask(charged, id, { ...t, status: "paused", reason: "price" })
@@ -152,6 +154,7 @@ module native_async {
     val x = s.tasks.get(a)
     val y = s.tasks.get(b)
     if (s.auction and x.bid != y.bid) x.bid > y.bid
+    else if (s.auction and x.ready != y.ready) x.ready < y.ready
     else x.order < y.order or (x.order == y.order and a < b)
   }
   pure def candidate(s: State): int = {
@@ -170,14 +173,15 @@ module native_async {
       val t = s.tasks.get(id)
       val visited = { ...s, phase: "selection", visits: s.visits + 1,
         maintenance: s.maintenance + 1, scanned: s.scanned.union(Set(id)) }
-      // PR4 preserves the ring head on deferral; PR5 scans past oversized work.
+      // PR4 checks gas before expiry/rotation; PR5 skips only live eligible work.
       if (s.auction and t.bid < s.price) visited.with("phase", "closed")
-      else if (t.cap > blockGas - s.gas)
+      else if (t.cap > blockGas - s.gas and
+        (not(s.auction) or (s.height < t.expiry and t.last != s.height)))
         if (s.auction) visited else visited.with("phase", "closed")
       else {
         val rotated = if (s.auction or s.ring.length() == 0) visited else
           visited.with("ring", s.ring.tail().append(t.owner))
-        if (s.height >= t.expiry) saveTask(rotated, id, t.with("status", "due"))
+        if (s.height >= t.expiry) settle(rotated, id, "expired")
         else if (t.bid < s.price or t.balance < t.cap * s.price)
           saveTask(rotated, id, { ...t, status: "paused",
             reason: if (t.bid < s.price) "price" else "funds" })
@@ -227,8 +231,11 @@ module native_async {
           else if (outcome == "yield") saveTask(committed.with("sequence", s.sequence + 1),
             id, { ...resolved, status: "due", ready: s.height + 1,
               order: s.sequence + 1 })
-          else saveTask(committed, id, { ...resolved, status: "waiting", wait: outcome,
-            generation: t.generation + 1, resolver: 2, due: due })
+          else saveTask(committed.with("sequence", if (s.auction) s.sequence + 1 else s.sequence),
+            id, { ...resolved, status: "waiting", wait: outcome,
+              generation: t.generation + 1, resolver: 2, due: due,
+              ready: if (s.auction) due else t.ready,
+              order: if (s.auction) s.sequence + 1 else t.order })
         }
       }
     }

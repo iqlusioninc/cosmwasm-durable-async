@@ -11,8 +11,9 @@
 **Spec:** `docs/superpowers/specs/2026-10-12-async-quint-review-design.md`
 
 **Execution status (2026-10-12 local):** Tasks 1–3 implemented and independently
-reviewed. Task 4 implementation and portable verification are complete; the final
-whole-branch independent model/source/runner review remains with the controller.
+reviewed. Task 4 and final whole-branch findings F1/F2 have local implementation
+and portable verification. Independent scoped final-fix re-review remains with
+the controller; no final approval is claimed.
 
 ## Global Constraints
 
