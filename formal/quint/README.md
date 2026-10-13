@@ -23,7 +23,7 @@ Equivalently, after installation, run `bash formal/quint/verify.sh` from the
 repository root. It checks all nine model/test/profile files, all 87 deterministic
 cases, four seeded simulation profiles and six expected-failure controls covering
 all four families. It always selects the TypeScript evaluator. `npm test` runs
-the four deterministic suites and nine runner error-path tests; simulations and
+the four deterministic suites and ten runner error-path tests; simulations and
 family negative controls belong to `npm run verify`. Parse/typecheck npm scripts
 cover all nine files. No runtime Rust/Go suite is invoked by these npm scripts.
 

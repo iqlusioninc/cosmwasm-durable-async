@@ -57,11 +57,11 @@ the temporary directory printed by the runner. Controls are excluded from normal
 `step`; they demonstrate check sensitivity, not new runtime exploit reproductions.
 
 Focused runner verification: `npm test` runs all 87 deterministic cases and
-`node --test verify.test.mjs`; nine runner checks pass, zero skipped. They use
+`node --test verify.test.mjs`; ten runner checks pass, zero skipped. They use
 real local CLI fixtures to reject missing CLI, invalid model, failed invariant
 and parser errors masquerading as counterexamples, require correct diagnostic
-and status, reject mixed counterexample and unrelated CLI errors, and reject
-unavailable explicit extended mode and unknown options.
+and status, reject mixed counterexample and unrelated CLI/Node permission errors,
+and reject unavailable explicit extended mode and unknown options.
 The unavailable-server test reserves then closes a local ephemeral port; it
 does not start/stop a backend. Full fresh output is summarized in the Task 4 report.
 
@@ -86,7 +86,39 @@ Native restore uses a separate durable projection, validates manifests/accountin
 rebuilds indexes and preserves ring history. Representative successor regressions
 are checked; full Rust/Go bisimulation is not established.
 
-## Prior backend evidence — not rerun in Task 4
+## Fresh extended runner and implementation receipts
+
+The controller ran the explicit extended path at runner commit `9cb9d2e`:
+
+```sh
+APALACHE_SERVER=localhost:8822 QUINT_RESULTS_DIR=/private/tmp/cosmwasm-adversarial.LDAo7r/final-quint-itf bash formal/quint/verify.sh --extended
+```
+
+Exit **0**. The portable portion again passed 87 deterministic cases, four seeded
+simulations and six checked negative controls. The runner connected to the
+already running Apalache **0.62.1** server and reported `[ok] No violation found
+(53603ms)` for `accountingInit/accountingStep` at depth **1**, then printed
+`extended check passed`. Full output is retained at
+`/private/tmp/cosmwasm-adversarial.LDAo7r/final-extended.log`. The backend
+server belonged to another project and was not stopped or modified. This
+exercises the runner's successful extended path on the same model/boundary as
+the prior check; it is not a new restore, service/IBC or full-model proof. The
+subsequent runner fix only tightened negative-control output classification;
+no model or extended invocation changed.
+
+The controller also ran `CARGO_TARGET_DIR=/private/tmp/cosmwasm-quint-final-target.VlvP4z
+cargo test --workspace --all-features --locked` from this formal branch. Exit
+**0**: **147** Rust test/harness cases passed, none failed or ignored, with no
+warnings in `/private/tmp/cosmwasm-adversarial.LDAo7r/final-rust-clean.log`.
+An earlier attempt with the shared target directory exited **101** before tests:
+`native_async::bid_component` and `native_async::next_base_price` were reported
+as unresolved imports in `crates/native-async/tests/pricing.rs`. The source
+exports were present and no runtime file changed; an isolated-target pricing
+check then passed, followed by the full clean-target suite above. The failed
+shared-target receipt remains at `/private/tmp/cosmwasm-adversarial.LDAo7r/final-rust.log`;
+the clean retry supports a cache/target isolation explanation, not a source fix.
+
+## Earlier bounded backend evidence
 
 Quint 0.33.0; actual Apalache JAR/server **0.62.1**, Java **21.0.12.1**.
 Task 2 observed this exact command from `formal/quint`:
@@ -112,10 +144,9 @@ result supplies **no new symbolic evidence for checkpoint reconstruction**.
 | Transient scaled arithmetic workaround | Imported constant still eagerly evaluated; workaround removed |
 | Redundant dedicated-port 8837 retry | Canceled; `Received RST_STREAM ...`, exit 1; no additional result; owned child/listener removed, shared 8822 left running |
 
-No Apalache/TLC result exists for legacy service/IBC models. Explicit runner
-extended mode is implemented but its successful path was not rerun in Task 4;
-only its unavailable-backend failure was freshly exercised. Portable success
-does not certify the extended path or any omitted proof.
+No Apalache/TLC result exists for legacy service/IBC models. The fresh extended
+runner check above covers only native accounting depth one; the portable result
+alone does not certify any symbolic check or omitted proof.
 
 ## Deferred development-tool concerns
 

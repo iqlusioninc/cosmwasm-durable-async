@@ -58,6 +58,20 @@ test('an unrelated CLI error cannot hide behind an expected counterexample diagn
   }, 'invariant'), /expected invariant failure/);
 });
 
+test('a Node permission error cannot hide behind an expected negative diagnostic', async () => {
+  const { requireExpectedFailure } = await import('./verify.mjs');
+  assert.throws(() => requireExpectedFailure({
+    status: 1,
+    stdout: '[violation] Found an issue (3ms at 333 traces/second).\n',
+    stderr: 'error: Invariant violated\nError: EACCES: permission denied, open counterexample.itf.json\n',
+  }, 'invariant'), /expected invariant failure/);
+  assert.throws(() => requireExpectedFailure({
+    status: 1,
+    stdout: '1 failed\nError [QNT508]: Assertion failed\nError: EACCES: permission denied\n',
+    stderr: 'error: Tests failed\n',
+  }, 'assertion'), /expected assertion failure/);
+});
+
 test('explicit extended mode fails when its server is unavailable', async () => {
   // Select a free local port, then close it. No backend is started or changed.
   const server = createServer();

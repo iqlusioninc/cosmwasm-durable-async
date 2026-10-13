@@ -12,14 +12,15 @@ const suites = ['pricing_tests.qnt', 'native_async_tests.qnt', 'service_waits_te
 const deterministic = ['--backend=typescript', '--seed=1', '--max-samples=1'];
 
 export function requireExpectedFailure(result, kind) {
-  const output = result.stdout + result.stderr;
-  const errors = output.split(/\r?\n/).map(line => line.trim())
-    .filter(line => /^error:|^Error \[QNT\d+\]:/.test(line));
-  const expected = kind === 'invariant'
-    ? ['error: Invariant violated']
-    : ['Error [QNT508]: Assertion failed', 'error: Tests failed'];
+  const output = (result.stdout ?? '') + (result.stderr ?? '');
+  const stderr = (result.stderr ?? '').trim();
+  const stdoutErrors = (result.stdout ?? '').split(/\r?\n/).map(line => line.trim())
+    .filter(line => /^(?:error:|[A-Za-z]*Error(?: \[QNT\d+\])?:|E[A-Z]+:|node:internal)/.test(line));
+  const expectedStderr = kind === 'invariant' ? 'error: Invariant violated' : 'error: Tests failed';
+  const expectedStdoutErrors = kind === 'invariant' ? [] : ['Error [QNT508]: Assertion failed'];
   if (result.error || result.signal || result.status !== 1 ||
-      errors.length !== expected.length || expected.some(line => !errors.includes(line))) {
+      stderr !== expectedStderr || stdoutErrors.length !== expectedStdoutErrors.length ||
+      expectedStdoutErrors.some(line => !stdoutErrors.includes(line))) {
     throw new Error(`expected ${kind} failure (exit 1 plus diagnostic), got status ${result.status}\n${output}`);
   }
 }
