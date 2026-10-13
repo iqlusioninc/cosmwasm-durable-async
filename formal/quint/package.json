@@ -1,0 +1,14 @@
+{
+  "name": "cosmwasm-durable-async-formal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned local tooling for the durable async Quint models",
+  "scripts": {
+    "parse": "quint parse pricing.qnt && quint parse pricing_tests.qnt",
+    "typecheck": "quint typecheck pricing.qnt && quint typecheck pricing_tests.qnt",
+    "test": "quint test pricing_tests.qnt --backend=typescript --seed=1 --max-samples=1"
+  },
+  "devDependencies": {
+    "@informalsystems/quint": "0.33.0"
+  }
+}
