@@ -5,32 +5,65 @@ This directory owns its tooling; it adds no runtime dependency. The local
 `package-lock.json`. It was exercised with Node **v26.11.1** and npm **11.20.0**.
 The global Quint 0.31.0 installation is not used or changed.
 
-## Reproduce the pricing checks
+## Reproduce the portable checks
 
 From the repository root:
 
 ```sh
 cd formal/quint
-npm ci --cache /private/tmp/cosmwasm-quint-npm-cache
+npm ci
 ./node_modules/.bin/quint --version
-./node_modules/.bin/quint --help
-./node_modules/.bin/quint parse --help
-./node_modules/.bin/quint typecheck --help
-./node_modules/.bin/quint test --help
 npm run parse
 npm run typecheck
 npm test
+npm run verify
 ```
 
-The test command is exactly:
+Equivalently, after installation, run `bash formal/quint/verify.sh` from the
+repository root. It checks all nine model/test/profile files, all 87 deterministic
+cases, four seeded simulation profiles and six expected-failure controls covering
+all four families. It always selects the TypeScript evaluator. `npm test` runs
+the four deterministic suites and nine runner error-path tests; simulations and
+family negative controls belong to `npm run verify`. Parse/typecheck npm scripts
+cover all nine files. No runtime Rust/Go suite is invoked by these npm scripts.
+
+The runner requires local pinned Quint 0.33.0 and rejects missing/wrong-version
+tools, positive-check failures, and negative controls that fail for another reason.
+Negative controls require **exit 1 and the expected assertion/invariant diagnostic**;
+an arbitrary nonzero exit is a failure. Counterexample ITFs go into a new temporary
+directory printed by the runner, or `QUINT_RESULTS_DIR` if explicitly supplied.
+The pricing mutation is a separate fixture; no tracked model is edited during a run.
+
+Portable mode prints `extended backend: NOT RUN` and makes no symbolic/exhaustive
+claim. To request the restricted symbolic accounting check, provision an Apalache
+0.62.1 server and its supported Java runtime separately, then run:
+
+```sh
+APALACHE_SERVER=localhost:PORT npm run verify:extended
+```
+
+Explicit extended mode requires a reachable supplied endpoint, then runs the
+portable obligations and `accountingInit/accountingStep` at depth 1. Unavailable
+backends and failed checks produce nonzero status; they are never counted as a
+skipped proof. The preflight checks TCP reachability, not server version/protocol;
+Quint performs the actual backend connection and check. Quint can attempt backend
+startup if a listener disappears or fails its protocol check, so use a correctly
+provisioned server and replace `PORT` with its listening port. No backend is
+provisioned by the setup instructions above.
+Observed machine-specific backend commands, versions and failed attempts are
+recorded in [verification-results.md](verification-results.md). The consolidated
+[all-PR review](../../docs/reviews/2026-10-12-all-open-pr-async-review.md) maps
+source findings and implementation evidence to each pinned head.
+
+The pricing-only test command is exactly:
 
 ```sh
 ./node_modules/.bin/quint test pricing_tests.qnt --backend=typescript --seed=1 --max-samples=1
 ```
 
 These tests contain no nondeterministic choices. Seed 1 and one sample make the
-invocation explicit and reproducible. Parse and typecheck cover both pricing
-files. These commands do not invoke symbolic or finite-state model checking.
+invocation explicit and reproducible. Parse and typecheck include both pricing
+files. The portable commands do not invoke symbolic or finite-state model checking.
 The TypeScript evaluator handles the integer atomics without JavaScript `number`
 rounding, as checked by the one-atomic and maximum-width fixtures.
 
@@ -237,7 +270,7 @@ lowering, restart of a real VM, or production resource calibration.
 
 ## Reproduce native checks
 
-From `formal/quint` (the package scripts currently cover pricing only):
+From `formal/quint`, individual commands equivalent to the runner's native steps:
 
 ```sh
 ./node_modules/.bin/quint typecheck native_async.qnt
@@ -279,12 +312,9 @@ six outcomes (yield, operation, timer, complete, application failure, rollback)
 and consumed gas 0, 1, or 2; pending deadlines are height 2. Depth 1 checks this
 boundary from that specific reachable fixture, not every possible poll state.
 
-```sh
-PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH QUINT_HOME=/private/tmp/native-quint-backend ./node_modules/.bin/quint verify native_profiles.qnt --init=accountingInit --step=accountingStep --invariant=safety --max-steps=1 --verbosity=5
-```
-
-The local Java shim does not work; the path above selected Homebrew Java
-21.0.12.1. Quint reused the existing localhost:8822 Apalache server. Read-only
+The exact observed invocation is retained in `verification-results.md`; it used
+Homebrew Java 21.0.12.1 because the system Java shim failed. Quint reused the
+existing localhost:8822 Apalache server. Read-only
 process inspection identified its open Apalache JAR as version **0.62.1**, also
 confirmed by that JAR's `version` command; the existing server was not replaced
 or stopped. `QUINT_HOME` only controls downloads when a server is absent.

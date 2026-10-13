@@ -4,9 +4,12 @@
   "private": true,
   "description": "Pinned local tooling for the durable async Quint models",
   "scripts": {
-    "parse": "quint parse pricing.qnt && quint parse pricing_tests.qnt",
-    "typecheck": "quint typecheck pricing.qnt && quint typecheck pricing_tests.qnt",
-    "test": "quint test pricing_tests.qnt --backend=typescript --seed=1 --max-samples=1"
+    "parse": "bash verify.sh --parse",
+    "typecheck": "bash verify.sh --typecheck",
+    "test": "bash verify.sh --tests && node --test verify.test.mjs",
+    "test:runner": "node --test verify.test.mjs",
+    "verify": "bash verify.sh",
+    "verify:extended": "bash verify.sh --extended"
   },
   "devDependencies": {
     "@informalsystems/quint": "0.33.0"

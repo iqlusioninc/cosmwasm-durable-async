@@ -1,6 +1,8 @@
 # All-open-PR async review and Quint model
 
-Status: design for review; implementation not started.
+Status: design approved; Tasks 1–3 implemented and independently reviewed.
+Task 4 implementation is verified locally; final whole-branch independent review
+is pending. Runtime findings remain report-only.
 
 ## Intent and scope
 

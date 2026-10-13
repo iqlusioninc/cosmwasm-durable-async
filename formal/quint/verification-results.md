@@ -1,0 +1,136 @@
+# Quint verification evidence — 2026-10-12
+
+Task 4's complete portable run used the final Task 1–3 models, unchanged from
+`2128e438ba0b2df7daaf90e05f719b9c991fd1d6`. Tooling/report changes do not alter
+runtime code. Results below separate fresh portable execution from prior bounded
+backend and implementation evidence. Final independent whole-branch review is pending.
+
+## Fresh portable run
+
+Observed environment: Node **v26.11.1**, npm **11.20.0**, project-local Quint
+**0.33.0**, explicit **TypeScript** evaluator. No global tools changed.
+From `/private/tmp/cosmwasm-quint.LDAo7r`:
+
+```sh
+bash formal/quint/verify.sh > /private/tmp/cosmwasm-adversarial.LDAo7r/task4-portable.log 2>&1
+```
+
+The portable command exits **0**. All nine top-level `.qnt` files parse/typecheck.
+Deterministic commands use seed **1**, one sample; simulation commands use
+`--invariant=safety --max-steps=80 --verbosity=1` and the witnesses shown below.
+The exact command arrays are committed in `verify.mjs`; equivalent individual
+commands and semantic domains are in [README.md](README.md).
+
+| Deterministic suite | Passing cases | Observed elapsed |
+| --- | --- | --- |
+| `pricing_tests.qnt` | 28 | 3 ms |
+| `native_async_tests.qnt` | 29 | 41 ms |
+| `service_waits_tests.qnt` | 16 | 10 ms |
+| `ibc_waits_tests.qnt` | 14 | 10 ms |
+| Total | **87**, none failed | No implementation suite inferred |
+
+| Simulation | Seed | Samples / depth | Result, elapsed | Witness traces |
+| --- | --- | --- | --- | --- |
+| Native auction `init/step` | 20261012 | 1,000 / 80 | No violation, 6,717 ms | poll 552; accepted 3; rollback 84 |
+| Native fixed `fixedInit/step` | 20261013 | 500 / 80 | No violation, 3,443 ms | poll 249; accepted **0**; rollback 34 |
+| Service `init/step` | 20261014 | 500 / 80 | No violation | accepted 136; rollback 165; restart 497; ambiguous 191 |
+| IBC `init/step` | 20261015 | 500 / 80 | No violation | accepted 57; rollback 81; restart 500; early timeout 26 |
+
+Every profile exits **0**. Samples are independent seeded traces, not exhaustive
+states or guaranteed branch coverage. The fixed simulation has no accepted-delivery
+witness; deterministic scenarios check delivery/retry separately.
+
+All six controls are **expected failures** checked by status and diagnostic:
+
+| Family / control | Required observed failure | Meaning |
+| --- | --- | --- |
+| Pricing `runner-fixtures/pricing_negative.qnt` | Exit 1, `Error [QNT508]: Assertion failed` | Literal expected result is one atomic too high |
+| Native `weakFlightInit/weakFlightStep` | Exit 1, `error: Invariant violated` | Reservation-only guard allows zero-price in-flight cancellation |
+| Native `weakRestoreInit/weakRestoreStep` | Same | Valid checkpoint loaded without rebuilding derived indexes |
+| Service `weakSequenceInit/weakSequenceStep` | Same | Wrong wait sequence accepted by mutation |
+| IBC `weakHostInit/weakHostStep` | Same | Host authentication gate omitted |
+| IBC `weakDataInit/weakDataStep` | Same | Direct-entrypoint intent/data check weakened |
+
+All use TypeScript, seed 1, one sample; state controls use depth 2 and fail at
+the first transition. The five state counterexamples are saved as ITF JSON under
+the temporary directory printed by the runner. Controls are excluded from normal
+`step`; they demonstrate check sensitivity, not new runtime exploit reproductions.
+
+Focused runner verification: `npm test` runs all 87 deterministic cases and
+`node --test verify.test.mjs`; nine runner checks pass, zero skipped. They use
+real local CLI fixtures to reject missing CLI, invalid model, failed invariant
+and parser errors masquerading as counterexamples, require correct diagnostic
+and status, reject mixed counterexample and unrelated CLI errors, and reject
+unavailable explicit extended mode and unknown options.
+The unavailable-server test reserves then closes a local ephemeral port; it
+does not start/stop a backend. Full fresh output is summarized in the Task 4 report.
+
+## Domains and proof limits
+
+| Family | Checked domain / abstraction |
+| --- | --- |
+| Exact pricing | 10^18 atomics/unit; u128 price domain, u64 gas/target/denominator; unbounded intermediate integer arithmetic; oversized fee is rejected by caller guard |
+| Native | Three non-reusable task slots, two actors/contracts, height ≤6, cap 1/2, gas 3, visits 2, maintenance 6, cumulative deposits ≤24; registration 8 = storage 1 + cleanup 1 + execution 6 |
+| Native prices | Small whole-unit exploration economy, target 2, denominator 2, floor 1 (zero-price profile 0); not production Decimal rounding granularity |
+| Legacy service | Two workflows/two waits, clock 0–6, deadline +2 (≤7), order IDs 1/2, per-service request IDs 1/2, references 0/1, external observations 0–2, broadcasts ≤8 |
+| IBC | Two workflows/two waits, independent clocks 0–6, deadline +2, input 0/5, honest doubling or dishonest value 7, values ≤20, four host packet IDs |
+
+Trace depth bounds unbounded ghost abort/restart counters. Finite data domains do
+not make random simulation exhaustive. SDK transaction/cache atomicity, trusted
+VM gas metering, authenticated sender/IBC proofs/commitments, faithful contract
+actor forwarding, source clock and durable journal filesystem semantics remain
+assumptions. No compiler/Wasm interpreter, cryptographic proof verifier, byte
+serialization/apphash theorem, calibrated host gas, production cap/overflow
+coverage, unconditional fairness, network consensus or production readiness is proved.
+Native restore uses a separate durable projection, validates manifests/accounting,
+rebuilds indexes and preserves ring history. Representative successor regressions
+are checked; full Rust/Go bisimulation is not established.
+
+## Prior backend evidence — not rerun in Task 4
+
+Quint 0.33.0; actual Apalache JAR/server **0.62.1**, Java **21.0.12.1**.
+Task 2 observed this exact command from `formal/quint`:
+
+```sh
+PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH QUINT_HOME=/private/tmp/native-quint-backend ./node_modules/.bin/quint verify native_profiles.qnt --init=accountingInit --step=accountingStep --invariant=safety --max-steps=1 --verbosity=5
+```
+
+Output: `Connecting with existing Apalache server`; `[ok] No violation found
+(105392ms).`; exit **0**. Read-only process/JAR inspection identified the existing
+localhost:8822 server, PID 83322, from `/private/tmp/lsm-lending`; it was not
+stopped/replaced. This checks one reachable poll-settlement fixture, six outcomes
+(yield, operation, timer, complete, application failure, rollback) × gas 0/1/2.
+`accountingInit/accountingStep`, live-state type and checked predicate are unchanged
+by the later checkpoint repair. That boundary never restores, so the retained
+result supplies **no new symbolic evidence for checkpoint reconstruction**.
+
+| Other backend attempt | Actual outcome / limit |
+| --- | --- |
+| `tinyInit/tinyStep`, depth 2 | Exit 0, 74,089 ms; shallow scheduling only, no completed poll |
+| Same, depth 4 | Own client interrupted, exit 130, no result; not a pass |
+| TLC via 0.62.1 JAR, 1 worker, 1 GiB heap, 16 MiB stack | Exit 1 before exploration: `TLC can't handle a number this big: 18446744073709551615`; no state count/exhaustive result |
+| Transient scaled arithmetic workaround | Imported constant still eagerly evaluated; workaround removed |
+| Redundant dedicated-port 8837 retry | Canceled; `Received RST_STREAM ...`, exit 1; no additional result; owned child/listener removed, shared 8822 left running |
+
+No Apalache/TLC result exists for legacy service/IBC models. Explicit runner
+extended mode is implemented but its successful path was not rerun in Task 4;
+only its unavailable-backend failure was freshly exercised. Portable success
+does not certify the extended path or any omitted proof.
+
+## Deferred development-tool concerns
+
+The Task 1 `npm audit --json --cache /private/tmp/cosmwasm-quint-npm-cache`
+exited 1, reporting **two high-severity dependency entries** (Quint via
+`adm-zip`, and `adm-zip@0.5.18`). These are two package entries, not two distinct
+advisories. Listed advisories: GHSA-xcpc-8h2w-3j85, GHSA-vwc7-r8mq-g2x9,
+GHSA-7q85-xj36-vmfc, GHSA-rcw4-f5rp-g42v, GHSA-j5f4-cc29-5x44,
+GHSA-p634-w6r4-rjp2, GHSA-c6fg-446q-cg94, GHSA-8238-w5pm-2374.
+No update/override/suppression was applied. Quint's downloaded Windows evaluator
+uses ZIP extraction; macOS/Linux assets use tar.gz. Portable TypeScript checks
+process local model text and do not download evaluators.
+
+Installation also printed npm's unapproved `protobufjs` postinstall notice.
+The canceled Apalache startup reported build `a321771` and a vulnerable pre-22
+protobuf generated gRPC reflection warning. These remain unresolved development
+tool/backend concerns, separate from runtime-contract findings. No new audit or
+backend startup was performed in Task 4.
