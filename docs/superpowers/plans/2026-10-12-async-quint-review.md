@@ -11,9 +11,10 @@
 **Spec:** `docs/superpowers/specs/2026-10-12-async-quint-review-design.md`
 
 **Execution status (2026-10-12 local):** Tasks 1–3 implemented and independently
-reviewed. Task 4 and final whole-branch findings F1/F2 have local implementation
-and portable verification. Independent scoped final-fix re-review remains with
-the controller; no final approval is claimed.
+reviewed. Task 4, whole-branch review and scoped F1/F2 re-review are complete.
+Controller checks passed on reviewed revision `6c7a59c`, and all five source heads
+were unchanged at 2026-10-13 05:21:56 UTC. Formal/docs scope is complete; runtime
+findings remain open and this is not runtime or production approval.
 
 ## Global Constraints
 
@@ -83,7 +84,7 @@ the controller; no final approval is claimed.
 - [x] Implement runner and execute on the final models. Publish actual tests/samples/depth/seed, bounds, versions and proof limits. Include at least one checked negative control for each model family.
 - [x] Assemble per-PR coverage matrix including exact heads, modeled transitions, source evidence, tests and outstanding unmodeled obligations. Do not infer merge compatibility between unrelated PR branches.
 - [x] Consolidate adversarial review findings with severity, lines, minimal trigger, impact, reproduction status and remediation. Separate confirmed issues, policy risks, incomplete checks and disproven hypotheses.
-- [ ] Refresh open PR heads; flag drift instead of silently applying old conclusions to new code. Independently review model/source correspondence and runner behavior, fix only model/report defects, rerun affected checks and commit.
+- [x] Refresh open PR heads; flag drift instead of silently applying old conclusions to new code. Independently review model/source correspondence and runner behavior, fix only model/report defects, rerun affected checks and commit.
 
 ## Execution recommendation
 

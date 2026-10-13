@@ -174,7 +174,8 @@ Supporting implementation tests are `TestAcceptanceRealVMFaultRollback` in
 Wasm/SDK cache failure and gas-meter boundaries. These are separate implementation
 test obligations; this model's simulation and bounded results neither execute
 those tests nor prove SDK atomicity, VM metering correctness, or calibrated gas
-costs. No implementation suite was rerun for the formal-model fixes.
+costs. The controller's final reviewed-revision check also passed 147 Rust cases
+on unchanged runtime source; this remains separate implementation evidence.
 
 `fixedInit` models PR4's FIFO task order inside a round-robin contract ring,
 preserving the ring head on insufficient block gas. `init` models PR5's
@@ -318,9 +319,11 @@ reserving 2 coins. `accountingStep` nondeterministically finishes with each of
 six outcomes (yield, operation, timer, complete, application failure, rollback)
 and consumed gas 0, 1, or 2; pending deadlines are height 2. Depth 1 checks this
 boundary from that specific reachable fixture, not every possible poll state.
-The retained symbolic receipt predates the final F1/F2 corrections to inspection
-and pending-wait staging/promotion. It is evidence for the original fixture and
-relation only; no new symbolic result is claimed for the changed transitions.
+The controller reran this accounting fixture at reviewed revision `6c7a59c`:
+Apalache 0.62.1 reported no violation at depth one (56,340 ms). This covers that
+fixture's finish outcomes, including pending staging; it does not establish
+changed expiry selection, delayed promotion, full restore or arbitrary-state
+correctness. Historical receipts remain scoped to their original revisions.
 
 The exact observed invocation is retained in `verification-results.md`; it used
 Homebrew Java 21.0.12.1 because the system Java shim failed. Quint reused the
@@ -345,6 +348,7 @@ Observed results with Quint 0.33.0:
 | Fixed seed 20261013, 500 traces, depth 80 | No safety violation; poll witness 249, accepted delivery 0, rollback 34 |
 | Both negative controls, seed 1, depth 2 | Expected invariant violations at the first transition, exit 1 |
 | Historical Apalache accounting fixture, depth 1 | Original relation only: no violation found, 105,392 ms, exit 0; runner receipt at `9cb9d2e` also predates F1/F2 |
+| Reviewed `6c7a59c` accounting fixture, depth 1 | No violation found, 56,340 ms, exit 0; same narrow accounting boundary, no expiry/delayed-promotion/full-restore proof |
 | TLC on native profile | Failed before state exploration on u64 literal; no checked-state count |
 
 The final F1/F2 correction reran all nine typechecks, 95 deterministic scenarios,
@@ -353,10 +357,12 @@ ten npm runner checks. The eight added native scenarios cover oversized expiry,
 PR4 insufficient-gas deferral, reserved pending slots, delayed grace, reverse
 maintenance FIFO, readiness-before-sequence order, restored delayed waits and
 PR4 current-height promotion. The existing expiry case now checks settlement
-through inspection in both profiles. No symbolic backend was rerun. In particular,
-`accountingStep` calls the changed `finish` transition, so prior depth-one receipts
-remain scoped to their original model; they provide no new evidence for changed
-inspection, staging/promotion or checkpoint reconstruction.
+through inspection in both profiles. The controller subsequently reran the full
+extended runner at reviewed revision `6c7a59c`, including the narrow accounting
+fixture above, and independently passed 95 deterministic cases plus ten npm runner
+checks. The existing backend was left untouched. Full receipts and the completed
+independent review are recorded in `verification-results.md`; broader transition
+and source-refinement proofs remain outside the result.
 
 Witness counts measure visited traces, not exhaustiveness. In particular, the
 fixed-price simulation did not reach accepted delivery; deterministic scenarios
@@ -499,8 +505,8 @@ names a different IBC artifact,
 `e4bea19387c8971e3d7484f9c589d7c72a2039994d683481f872a86aa4c55116`;
 its chain result is not evidence of a fresh chain run for the rebuilt hash.
 Compiled IBC fixtures manually dispatch self messages and prove neither IBC
-authentication nor SDK transaction rollback. No runtime suite was rerun by this
-formal-model task; those source-review results are separate evidence.
+authentication nor SDK transaction rollback. These source-review results and the
+controller's 147-case Rust check remain separate from formal-model evidence.
 
 ## Reproduce legacy checks and controls
 

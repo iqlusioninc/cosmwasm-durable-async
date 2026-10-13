@@ -1,8 +1,10 @@
 # All-open-PR async review and Quint model
 
 Status: design approved; Tasks 1–3 implemented and independently reviewed.
-Task 4 and the final whole-branch review's F1/F2 corrections are verified locally;
-independent scoped final-fix re-review is pending. Runtime findings remain report-only.
+Task 4, final whole-branch review and scoped F1/F2 re-review are complete. The
+controller verified the reviewed revision `6c7a59c`; F1/F2 are addressed with no
+new breakage found. This closes formal/docs review only, not runtime approval.
+Runtime findings remain report-only.
 
 ## Intent and scope
 

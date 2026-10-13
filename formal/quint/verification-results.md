@@ -3,8 +3,49 @@
 The current portable receipt includes the final F1/F2 model corrections after
 whole-branch review of `da59262`: selected expiry settlement and preserved auction
 wait readiness/FIFO. No runtime code changed. Results below separate fresh portable
-execution from historical bounded backend and implementation evidence. Independent
-scoped final-fix re-review is pending; runtime findings N1/N2/R1 remain open.
+execution from bounded backend and implementation evidence. Independent whole-branch
+review and scoped final-fix re-review are complete; runtime findings N1/N2/R1 remain open.
+
+## Reviewed-revision closeout
+
+Whole-branch review of `9ec0386..da59262` found no Critical findings and two Important
+model/source correspondence defects: F1 selected expiry settlement and F2 reserved
+auction wait readiness/FIFO. Scoped independent re-review of `da59262..6c7a59c`
+found both **ADDRESSED**, no new Critical/Important breakage and no new out-of-scope
+observations. It inspected the fix diff, surrounding transitions, named source
+anchors and regression/evidence receipts. This completes review of the formal/docs
+deliverable, not a new runtime audit, runtime safety judgment or production approval.
+
+The controller freshly verified reviewed revision
+`6c7a59c534aaad710cffaa4315dcebe3adbe4363`:
+
+| Check | Fresh result / receipt |
+| --- | --- |
+| `npm test` from `formal/quint` | Exit 0; 95 deterministic cases and ten runner checks; `/private/tmp/cosmwasm-adversarial.LDAo7r/final-reviewed-npm.log` |
+| `cargo test --workspace --all-features --locked`, clean target | Exit 0; 147 Rust test/harness cases on unchanged runtime source; `/private/tmp/cosmwasm-adversarial.LDAo7r/final-reviewed-rust.log` |
+| Full extended runner below | Exit 0; nine files parse/typecheck, 95 deterministic cases, 2,500 seeded traces and six expected controls, plus the narrow depth-one accounting check; `/private/tmp/cosmwasm-adversarial.LDAo7r/final-reviewed-extended.log` |
+
+From the repository root:
+
+```sh
+APALACHE_SERVER=localhost:8822 QUINT_RESULTS_DIR=/private/tmp/cosmwasm-adversarial.LDAo7r/final-reviewed-itf bash formal/quint/verify.sh --extended
+```
+
+Apalache **0.62.1**, `accountingInit/accountingStep`, depth **1**:
+`[ok] No violation found (56340ms)`; runner printed `extended check passed`.
+The existing server was untouched. This is fresh evidence for this specific
+accounting fixture and its finish outcomes, including pending staging. It is
+**not** proof of changed expiry selection, delayed promotion, full restore or the
+full native relation. Historical `9cb9d2e` receipts below retain their original
+revision scope. Portable witnesses/bounds below remain unchanged.
+
+The controller refreshed all five open PR heads at **2026-10-13 05:21:56 UTC**:
+
+```sh
+gh pr list --repo iqlusioninc/cosmwasm-durable-async --state open --json number,headRefOid,baseRefName --limit 100
+```
+
+All matched the pinned inventory. No push, merge or external PR update occurred.
 
 ## Fresh portable run
 
@@ -116,8 +157,9 @@ subsequent runner fix only tightened negative-control output classification;
 no model or extended invocation changed at that time. The later F1/F2 correction
 changes `inspect` and `finish` (including pending readiness allocation), as well as
 promotion/order. The retained `9cb9d2e` depth-one result applies only to its original
-accounting fixture/relation. No backend was started or rerun for the fixes, and no
-new symbolic evidence is claimed for the changed scheduling or promotion behavior.
+accounting fixture/relation. The fix implementer did not start or rerun a backend;
+the controller's later reviewed-revision accounting check is recorded above and
+does not prove changed expiry selection or delayed promotion.
 
 The controller also ran `CARGO_TARGET_DIR=/private/tmp/cosmwasm-quint-final-target.VlvP4z
 cargo test --workspace --all-features --locked` from this formal branch. Exit
@@ -147,7 +189,8 @@ stopped/replaced. This checks one reachable poll-settlement fixture, six outcome
 (yield, operation, timer, complete, application failure, rollback) × gas 0/1/2.
 `accountingInit/accountingStep`, live-state type and checked predicate are unchanged
 by the checkpoint repair that followed that check. The final F1/F2 wave subsequently
-changed transitions used by that relation. It was not symbolically rechecked.
+changed transitions used by that relation. The controller later rechecked the
+narrow accounting fixture at `6c7a59c`, as recorded above.
 That original boundary never restores; the retained result supplies **no new
 symbolic evidence for checkpoint reconstruction or the final F1/F2 transitions**.
 

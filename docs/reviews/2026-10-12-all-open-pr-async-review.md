@@ -6,15 +6,16 @@ source-confirmed Rust/Go discrepancies; neither has a new runtime reproduction
 in this review. R1 is an economic-policy/liveness risk. Two lower-priority
 demonstration/documentation issues are recorded below. No runtime fix, external
 PR comment, push, merge, deployment or signing was performed. Final whole-branch
-review identified F1/F2 model correspondence issues; both have local corrections
-and passing portable checks. Independent scoped final-fix re-review is pending.
+review identified F1/F2 model correspondence issues; scoped independent re-review
+found both addressed and no new breakage. Controller checks passed on `6c7a59c`.
+Formal/docs review is complete; this is not runtime or production approval.
 
 ## Inventory and coverage
 
-Refreshed again at **2026-10-13 04:59 UTC** (2026-10-12 local) with:
+Refreshed again at **2026-10-13 05:21:56 UTC** (2026-10-12 local) with:
 
 ```sh
-gh pr list --repo iqlusioninc/cosmwasm-durable-async --state open --json number,title,headRefOid,headRefName,baseRefName,url
+gh pr list --repo iqlusioninc/cosmwasm-durable-async --state open --json number,headRefOid,baseRefName --limit 100
 ```
 
 Exactly PRs 1–5 were open; every head still matched the reviewed source. A future
@@ -26,7 +27,7 @@ head change invalidates automatic attribution of these conclusions to new code.
 | [#2 VM validation](https://github.com/iqlusioninc/cosmwasm-durable-async/pull/2), `f60a1ba85b94d221870265f7ecaca0405dc0d552`; base `main` | VM commit/abort is an **assumption** in the models, with named obligations mapped to [five compiled tests](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/f60a1ba85b94d221870265f7ecaca0405dc0d552/tools/vm-tests/tests/compiled.rs). [Build/check scripts](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/f60a1ba85b94d221870265f7ecaca0405dc0d552/scripts/check-wasm.sh) pin/build/normalize/hash the artifact. | Current normalized fulfill artifact rebuilt and five compiled VM tests passed: fresh invocations, authority/stale callback, deadline/domain failure, OOG, payload cost. | No Wasm interpreter/compiler/ABI equivalence theorem, SDK atomicity or outbound dispatch proof. OOG fixture discards failed backend; payload sweep is not host gas/size calibration. |
 | [#3 IBC waits](https://github.com/iqlusioninc/cosmwasm-durable-async/pull/3), `1d8adb79847ddd764693fba891a64450d70cd6ca`; base `feat/wasm-vm-validation` | `ibc_waits`: immutable bind/close, exact intent data/endpoints/timeout, authenticated host commitment outcomes, self Deliver, two waits, local deadline, early remote timeout, atomic abort, restart. [Adapter](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/1d8adb79847ddd764693fba891a64450d70cd6ca/contracts/ibc-query/src/lib.rs#L274-L463), [host assumptions](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/1d8adb79847ddd764693fba891a64450d70cd6ca/docs/ibc-example.md#L88-L139) | 10 native contract + 6 focused public-API tests + 2 compiled IBC VM tests. Model: 14 deterministic cases, 500×80 simulation, host/data mutation controls. | Real IBC proof/core replay handling and SDK commitment rollback, live node restart/state sync, arbitrary encodings/width overflow. Sequence authority belongs to IBC core, not an adapter check. Current artifact differs from historical chain-smoke artifact. |
 | [#4 native runtime](https://github.com/iqlusioninc/cosmwasm-durable-async/pull/4), `e783dbf83152842cfb211eda7554caaf3afd861a`; base `main` | `native_async` fixed-price profile: registration/funding/policy/lease, waits/results, ring/FIFO scheduling, bounded visits/maintenance, explicit flight, commit/rollback/charging, settlement and durable projection/restore. [Rust poll loop](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/e783dbf83152842cfb211eda7554caaf3afd861a/crates/native-async/src/runtime.rs), [Go scheduler](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/e783dbf83152842cfb211eda7554caaf3afd861a/integration/wasmd/scheduler.go#L116-L136) | Own-head all-features Rust: 107 test/harness cases pass, none failed/ignored. Native model's 37 cases shared with PR5; fixed simulation 500×80. | N2 deadline/resolver parity; expired-head ordering differs. Byte/schema/code/apphash activation validation, refund fallback, admission/byte caps, full restore bisimulation and host calibration are not proved. No dedicated own-head Go rerun. |
-| [#5 auction](https://github.com/iqlusioninc/cosmwasm-durable-async/pull/5), `9ec038632388343738c72b60e5512d29d2669e66`; base `feat/native-async-funding` | `pricing` exact integer fixtures; `native_async` bid/readiness/FIFO, scan-past live oversized work, immediate selected expiry settlement, reserved wait slots and preserved grace age, block-start price, consumed-gas charge and next-price update. [Pricing](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/9ec038632388343738c72b60e5512d29d2669e66/crates/native-async/src/pricing.rs), [selection](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/9ec038632388343738c72b60e5512d29d2669e66/integration/wasmd/scheduler.go#L228-L241) | 147 all-features Rust test/harness cases pass; Go upstream package including opt-in local three-process state-sync test passes. Model: 28 pricing + shared 37 native cases, auction 1,000×80, flight/restore mutation controls. Historical accounting boundary: Apalache depth 1 at `9cb9d2e`, original relation only; no symbolic rerun after F1/F2. | N1 zero-price flight exclusion; R1 visit economics; N2 inherited. Same native abstraction limits as PR4, plus small-price rounding differs from production Decimal economy. No universal priority fairness or economic-resistance theorem. |
+| [#5 auction](https://github.com/iqlusioninc/cosmwasm-durable-async/pull/5), `9ec038632388343738c72b60e5512d29d2669e66`; base `feat/native-async-funding` | `pricing` exact integer fixtures; `native_async` bid/readiness/FIFO, scan-past live oversized work, immediate selected expiry settlement, reserved wait slots and preserved grace age, block-start price, consumed-gas charge and next-price update. [Pricing](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/9ec038632388343738c72b60e5512d29d2669e66/crates/native-async/src/pricing.rs), [selection](https://github.com/iqlusioninc/cosmwasm-durable-async/blob/9ec038632388343738c72b60e5512d29d2669e66/integration/wasmd/scheduler.go#L228-L241) | 147 all-features Rust test/harness cases pass; Go upstream package including opt-in local three-process state-sync test passes. Model: 28 pricing + shared 37 native cases, auction 1,000×80, flight/restore mutation controls. Reviewed `6c7a59c` accounting fixture: Apalache 0.62.1 depth 1, 56,340 ms, exit 0; no changed-expiry, delayed-promotion or full-restore proof. | N1 zero-price flight exclusion; R1 visit economics; N2 inherited. Same native abstraction limits as PR4, plus small-price rounding differs from production Decimal economy. No universal priority fairness or economic-resistance theorem. |
 
 PR2→PR3 and PR4→PR5 are existing stacks. PR1 is independent. The model branch is
 based on PR5; PR1/PR3 contract paths are absent here and are linked at their own
@@ -162,7 +163,12 @@ dedicated differential execution or newly assigned high-severity vulnerability.
 ## Implementation test and artifact receipts
 
 Most review runs preceded Task 4; a later clean-target formal-branch Rust suite
-is recorded below. Temporary repro checks remain outside production source.
+is recorded below. The controller also checked reviewed revision `6c7a59c` with
+`cargo test --workspace --all-features --locked` in a clean target: exit 0, 147
+cases; receipt `/private/tmp/cosmwasm-adversarial.LDAo7r/final-reviewed-rust.log`.
+Its npm and full extended-runner receipts are recorded in
+[verification results](../../formal/quint/verification-results.md#reviewed-revision-closeout).
+Temporary repro checks remain outside production source.
 Their essential commands/results are committed here instead of relying only on
 ignored reports or temporary files.
 
