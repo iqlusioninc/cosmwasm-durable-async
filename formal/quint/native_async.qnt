@@ -22,6 +22,15 @@ module native_async {
     deposits: int, fees: int, refunds: int, effects: int,
     history: Set[(int, int)], polls: int, authorityOk: bool,
     rollbackOk: bool, priceOk: bool, restoreOk: bool }
+  // Durable boundary representation: no execution phase, reservation context,
+  // block meters/cursor, cached price, or materialized live queue/index fields.
+  // History/polls and accounting totals include verification ghost history;
+  // they are carried across restart for checking, not a disk-schema claim.
+  type Checkpoint = { tasks: int -> Task, height: int, auction: bool, base: int,
+    sequence: int, ring: List[int], readyRecords: Set[(int, int, int)],
+    dueRecords: Set[(int, int, int)], atBoundary: bool,
+    deposits: int, fees: int, refunds: int, effects: int,
+    history: Set[(int, int)], polls: int }
   pure val emptyTask: Task = { owner: 0, controller: 0, refund: 0, identity: 0,
     status: "absent", reason: "", bid: 0, cap: 1, expiry: 0,
     balance: 0, reserve: 0, lease: 0, continuation: 0,
@@ -186,6 +195,9 @@ module native_async {
     }
   }
   pure def finish(s: State, outcome: str, used: int, due: int): State = {
+    // Host trust contract: used is trusted VM-metered consumption <= cap, and
+    // SDK transaction/cache atomicity supplies the guest commit/rollback step.
+    // These assumptions are not established by this nondeterministic model.
     if (s.flight == 0) s else {
       val id = s.flight
       val t = s.tasks.get(id)
@@ -259,19 +271,41 @@ module native_async {
   pure def metadataOf(s: State): bool = s.queue == canonicalQueue(s) and
     s.readyIndex == canonicalReadyIndex(s) and s.dueIndex == canonicalDueIndex(s) and
     s.ring.indices().map(i => s.ring.nth(i)) == queueOwners(s) and s.ring.length() == s.ring.indices().map(i => s.ring.nth(i)).size()
-  pure def checkpointValid(s: State): bool =
-    s.flight == 0 and conservationOf(s) and identityOf(s) and metadataOf(s) and
-    ids.forall(id => s.tasks.get(id).reserve == 0 and s.tasks.get(id).status != "flight")
-  pure def restore(s: State, saved: State, validateMetadata: bool): State =
-    if (saved.flight != 0 or (validateMetadata and not(checkpointValid(saved)))) s
-    else {
-      // Reconstruct materialized indexes from durable task records after
-      // validating their saved counterparts. Preserve the historical ring:
-      // its rotation order cannot be recovered from a set of task owners.
-      val reconstructed = { ...saved, queue: canonicalQueue(saved),
-        readyIndex: canonicalReadyIndex(saved), dueIndex: canonicalDueIndex(saved) }
-      reconstructed.with("restoreOk", saved.restoreOk and metadataOf(saved))
+  pure def checkpoint(s: State): Checkpoint = {
+    tasks: s.tasks, height: s.height, auction: s.auction, base: s.base,
+    sequence: s.sequence, ring: s.ring,
+    readyRecords: canonicalReadyIndex(s), dueRecords: canonicalDueIndex(s),
+    atBoundary: s.phase == "idle" and s.flight == 0,
+    deposits: s.deposits, fees: s.fees, refunds: s.refunds, effects: s.effects,
+    history: s.history, polls: s.polls }
+  pure def decodeDurable(saved: Checkpoint): State = {
+    ...initial(saved.auction, saved.base), tasks: saved.tasks, height: saved.height,
+    sequence: saved.sequence, ring: saved.ring, deposits: saved.deposits,
+    fees: saved.fees, refunds: saved.refunds, effects: saved.effects,
+    history: saved.history, polls: saved.polls }
+  pure def checkpointValid(saved: Checkpoint): bool = {
+    val decoded = decodeDurable(saved)
+    val indexed = decoded.with("queue", canonicalQueue(decoded))
+    saved.atBoundary and saved.polls == saved.history.size() and
+      conservationOf(decoded) and identityOf(decoded) and
+      saved.readyRecords == canonicalReadyIndex(decoded) and
+      saved.dueRecords == canonicalDueIndex(decoded) and
+      saved.ring.indices().map(i => saved.ring.nth(i)) == queueOwners(indexed) and
+      saved.ring.length() == queueOwners(indexed).size() and
+      ids.forall(id => decoded.tasks.get(id).reserve == 0 and
+        decoded.tasks.get(id).status != "flight")
+  }
+  pure def restore(s: State, saved: Checkpoint, rebuildIndexes: bool): State = {
+    if (not(checkpointValid(saved))) s else {
+      val decoded = decodeDurable(saved)
+      // false is an explicit negative-control mutation only: durable task and
+      // ring data load, but the discarded live indexes never get rebuilt.
+      val reconstructed = if (rebuildIndexes) { ...decoded,
+        queue: canonicalQueue(decoded), readyIndex: canonicalReadyIndex(decoded),
+        dueIndex: canonicalDueIndex(decoded) } else decoded
+      reconstructed.with("restoreOk", metadataOf(reconstructed))
     }
+  }
 
   var state: State
   action init = state' = initial(true, 1)
@@ -294,7 +328,7 @@ module native_async {
       state' = begin(state), state' = maintain(state, id),
       state' = inspect(state), state' = finish(state, outcome, used, due),
       state' = finalize(state), state' = deliver(state, id, actor, generation),
-      state' = restore(state, state, true),
+      state' = restore(state, checkpoint(state), true),
     }
   }
   val conservation = conservationOf(state)

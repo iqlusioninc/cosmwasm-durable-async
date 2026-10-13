@@ -66,18 +66,20 @@ module native_async_tests {
       rejected.tasks.get(1).continuation == 0 and rejected.fees == 2)
   }
   run restoreMetadataRejectedTest = {
-    val saved = begin(one)
-    val bad = saved.with("queue", Set())
+    val saved = checkpoint(one)
+    val bad = saved.with("readyRecords", Set())
     assert(checkpointValid(saved) and not(checkpointValid(bad)) and
       restore(initial(true, 1), bad, true) == initial(true, 1))
   }
   run restoreNextStepTest = {
     val waiting = finish(pollingTask, "operation", 1, 3)
     val live = finalize(deliver(waiting, 1, 2, 1))
-    val restored = restore(initial(true, 1), live, true)
+    val restored = restore(initial(true, 1), checkpoint(live), true)
     val nextLive = inspect(maintain(begin(live), 1))
     val nextRestored = inspect(maintain(begin(restored), 1))
-    assert(restored == live and nextLive.flight == 1 and
+    assert(restored != live and restored.before == emptyTask and
+      nextLive.flight == 1 and nextRestored.flight == 1 and
+      nextRestored.tasks.get(1).inbox == 1 and
       finish(nextRestored, "complete", 1, 0) ==
         finish(nextLive, "complete", 1, 0))
   }
@@ -119,7 +121,7 @@ module native_async_tests {
       failed.refunds == 5 and failed.fees == 3 and held(failed) == 0)
   }
   run generationMetadataRejectedTest = {
-    val bad = begin(one).with("readyIndex", Set((1, 9, 1)))
+    val bad = checkpoint(one).with("readyRecords", Set((1, 9, 1)))
     assert(not(checkpointValid(bad)))
   }
   run blockStartPriceAndUpdateTest = {
@@ -146,7 +148,7 @@ module native_async_tests {
       expired.refunds == 6 and expired.fees == 2 and held(expired) == 0)
   }
   run corruptAccountingRestoreRejectedTest = {
-    val bad = one.with("deposits", 9)
+    val bad = checkpoint(one).with("deposits", 9)
     assert(not(checkpointValid(bad)) and restore(initial(true, 1), bad, true) == initial(true, 1))
   }
   run acceptedInboxConsumedOnceTest = {
@@ -176,5 +178,44 @@ module native_async_tests {
     val idle = finalize(pruned)
     assert(pruned.tasks.get(1).status == "pruned" and
       register(idle, 1, 2, 2, 1) == idle and pruned.tasks.get(1).identity == 1)
+  }
+  // A restart must reconstruct the discarded queue and preserve historical
+  // contract rotation, not simply copy a complete saved live State.
+  run restartRebuildsQueueAndRingSuccessorTest = {
+    val registered = register(register(register(initial(false, 1), 1, 1, 1, 1),
+      2, 1, 1, 1), 3, 2, 1, 1)
+    val live = finalize(finish(inspect(begin(registered)), "yield", 1, 0))
+    val discarded = { ...live, queue: Set(), readyIndex: Set(), dueIndex: Set() }
+    val restored = restore(initial(false, 9), checkpoint(discarded), true)
+    val nextLive = inspect(begin(live))
+    val nextRestored = inspect(begin(restored))
+    assert(restored.queue == Set(2, 3) and restored.ring == List(2, 1) and
+      nextLive.flight == 3 and nextRestored.flight == 3 and
+      finish(nextRestored, "complete", 1, 0) == finish(nextLive, "complete", 1, 0))
+  }
+  run restartDiscardsExecutionCacheTest = {
+    val live = finalize(finish(pollingTask, "operation", 1, 3))
+    val restored = restore(initial(true, 9), checkpoint(live), true)
+    assert(live.before != emptyTask and live.scanned == Set(1) and
+      restored.before == emptyTask and restored.scanned == Set() and
+      restored.visits == 0 and restored.maintenance == 0 and restored.gas == 0 and
+      restored.tasks.get(1).continuation == 1 and restored.tasks.get(1).due == 3)
+  }
+  run omittedReconstructionLosesRunnableSuccessorTest = {
+    val saved = checkpoint(one)
+    val restored = restore(initial(true, 9), saved, true)
+    val omitted = restore(initial(true, 9), saved, false)
+    assert(inspect(begin(restored)).flight == 1 and
+      inspect(begin(omitted)).flight == 0 and not(metadataOf(omitted)))
+  }
+  run missingDurableRingRejectedTest = {
+    val bad = checkpoint(one).with("ring", List())
+    assert(not(checkpointValid(bad)) and
+      restore(initial(true, 9), bad, true) == initial(true, 9))
+  }
+  run midBlockCheckpointRejectedTest = {
+    val saved = checkpoint(begin(one))
+    assert(not(checkpointValid(saved)) and
+      restore(initial(true, 9), saved, true) == initial(true, 9))
   }
 }

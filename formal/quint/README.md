@@ -100,7 +100,7 @@ Do not interpret these development-tool findings as runtime crate findings.
 `conservation`, `authority`, `polling`, `rollback`, `price`, and
 `restoreEquivalence`. This is an executable **intended-safety abstraction**, not
 a proof that the Rust or Go hosts implement it. `native_async_tests.qnt` contains
-24 deterministic scenarios; `native_profiles.qnt` provides bounded profiles and
+29 deterministic scenarios; `native_profiles.qnt` provides bounded profiles and
 two separately named negative controls. Neither negative control is reachable
 through the normal `step` or `tinyStep` relation.
 
@@ -124,6 +124,25 @@ operation/timer and application failure commit one abstract guest effect;
 rollback/invalid wait outcomes preserve prior continuation and inbox and charge
 consumed gas. The model does not interpret guest code or prove Wasm rollback.
 
+The abstract guest transition **assumes SDK transaction/cache atomicity**:
+successful guest effects commit atomically, while traps, invalid responses and
+outbound failures discard staged guest writes/events; host charging/accounting
+is then retained as modeled. It also **assumes `used` is trusted VM-metered gas
+bounded by the reserved poll cap**, not a guest-supplied usage claim. Rejecting
+an out-of-range `used` in Quint does not prove the real VM meter reports physical
+work correctly or that real host work fits its reserve.
+
+Supporting implementation tests are `TestAcceptanceRealVMFaultRollback` in
+[`acceptance_test.go`](../../integration/wasmd/acceptance_test.go),
+`TestRealWasmOutboundRollback` in
+[`keeper_test.go`](../../integration/wasmd/keeper_test.go), and
+`TestModuleEndBlockMeterIsolationAndRollback` in
+[`boundary_test.go`](../../integration/wasmd/boundary_test.go). They exercise real
+Wasm/SDK cache failure and gas-meter boundaries. These are separate implementation
+test obligations; this model's simulation and bounded results neither execute
+those tests nor prove SDK atomicity, VM metering correctness, or calibrated gas
+costs. No implementation suite was rerun for the checkpoint-only fix.
+
 `fixedInit` models PR4's FIFO task order inside a round-robin contract ring,
 preserving the ring head on insufficient block gas. `init` models PR5's
 descending bid/FIFO order. Auction selection counts visits for inspections,
@@ -136,6 +155,12 @@ tasks consuming both visits over two blocks while the third never polls and
 one gas unit remains unused each block. This is an allowed outcome, not a safety
 violation or a quantified attack-cost result.
 
+At an expired PR4 queue head, this model follows the Go host's gas-fit check and
+ring rotation before expiry handling. PR4 Rust checks expiry first and can leave
+the same owner's live sibling at the ring head. That difference can change the
+next inspection under a visit cap; the fixed model is not exact correspondence
+for both hosts at this boundary.
+
 For charging, small whole-unit prices are converted to atomics and passed to
 the guarded Task 1 helpers. Price evolution uses the same integer recurrence
 in a **scaled integer-price economy**, target gas 2, denominator 2, floor 1
@@ -145,16 +170,30 @@ fixture correctness remains the separate `pricing_tests.qnt` obligation.
 `blockStartPriceAndUpdateTest` exercises two reservations at price 4 and a next
 block price of 5; the ordinary base-1 simulation often remains at its floor.
 
-Restore validates task identity and generation, aggregate escrow accounting,
-ready and due `(task, generation, order/deadline)` indexes, and ring membership
-without duplicates. It rejects an in-flight checkpoint. It then reconstructs
-materialized indexes from task records while preserving historical ring order.
-`restoreNextStepTest` compares live/restored promotion, reservation, and completion
-after an accepted result. The component name `restoreEquivalence` denotes
-metadata agreement and rejection of invalid activation; **it is not a general
-bisimulation proof for every Rust/Go next step**. Checkpoints are abstract
-quiescent states; snapshot serialization, authentication and application-state
-hashes are outside the model.
+`Checkpoint` is a distinct durable projection of live `State`. It carries task
+records, height/config/next price, sequence, historical contract ring, redundant
+ready/due record manifests, accounting totals and verification ghost poll history.
+It excludes execution phase, current-block price/meters/cursor, in-flight context,
+rollback cache, and live queue/index caches. Projection emits canonical manifests
+from task records; restore validates those manifests against the decoded task
+records, validates identity/generation/accounting and ring membership, then
+reconstructs live queue/index caches. Only between-block checkpoints are accepted.
+The fresh execution context has zero meters, empty scan/rollback caches and idle
+phase. Ghost history preserves cross-restart checks; it is not a disk-schema claim.
+
+`restartRebuildsQueueAndRingSuccessorTest` discards all live queue/index caches,
+restarts from the durable projection, and requires the next selected task to be
+task 3 under the saved ring `[2, 1]`. Replacing the ring with canonical owner order
+would select task 2 and fail this test. `restoreNextStepTest` starts from unequal
+live/reconstructed states and compares promotion/reservation/completion after an
+accepted result; the inbox and continuation must survive. A separate regression
+requires stale execution context to be cleared. `weakRestoreStep` deliberately
+omits index reconstruction from a valid checkpoint: runnable task 1 cannot poll
+in the next block and the safety predicate fails. The component name
+`restoreEquivalence` still denotes metadata consistency; representative successor
+tests add the behavioral correspondence checks. **No full bisimulation proof for
+every Rust/Go next step is claimed.** Byte serialization, schema validation,
+authentication and application-state hashes are outside the model.
 
 ## Source correspondence and exclusions
 
@@ -219,9 +258,10 @@ pass and not merely fail to parse/typecheck. Save the full ITF counterexamples:
 
 The first trace starts from a reachable zero-price in-flight task, cancels it,
 and leaves `flight=1` with terminal status and `authorityOk=false`. The second
-starts from a ready task, drops the persisted queue, bypasses validation, and
-activates with `restoreOk=false`. It represents omitted corruption validation,
-not an ability to forge a snapshot authenticated by a trusted application hash.
+loads a valid durable checkpoint but deliberately omits rebuilding the discarded
+indexes, leaving the ready task unreachable and `restoreOk=false`. It is a model
+mutation to test reconstruction coverage, not an implementation finding or an
+ability to forge a snapshot authenticated by a trusted application hash.
 
 The `tinyInit` bounded profile fixes one pre-registered task, owner 1, bid/cap/base 1. Its
 `tinyStep` explores begin/maintenance/reserve, yield/complete/rollback with gas 1,
@@ -259,13 +299,20 @@ Observed results with Quint 0.33.0:
 
 | Check | Result |
 | --- | --- |
-| Native typechecks and deterministic scenarios | All three files typecheck; 24/24 tests pass |
-| Exact pricing suite | 28/28 tests pass |
+| Native typechecks and deterministic scenarios | All three files typecheck; 29/29 tests pass |
+| Exact pricing suite | Prior check: 28/28 pass; helpers unchanged by checkpoint repair |
 | Auction seed 20261012, 1,000 traces, depth 80 | No safety violation; poll witness 552, accepted delivery 3, rollback 84 |
 | Fixed seed 20261013, 500 traces, depth 80 | No safety violation; poll witness 249, accepted delivery 0, rollback 34 |
 | Both negative controls, seed 1, depth 2 | Expected invariant violations at the first transition, exit 1 |
 | Apalache accounting fixture, depth 1 | No violation found, 105,392 ms, exit 0 |
 | TLC on native profile | Failed before state exploration on u64 literal; no checked-state count |
+
+The checkpoint repair reran the native typechecks, 29 scenarios, both seeded
+simulations and both negative controls. It did not rerun pricing helpers or the
+symbolic backend: `accountingInit`, `accountingStep`, their live-state type and
+the checked safety predicate are unchanged, and that relation never restores.
+The prior depth-one accounting result therefore retains exactly its original
+scope; it provides no new bounded evidence for checkpoint reconstruction.
 
 Witness counts measure visited traces, not exhaustiveness. In particular, the
 fixed-price simulation did not reach accepted delivery; deterministic scenarios

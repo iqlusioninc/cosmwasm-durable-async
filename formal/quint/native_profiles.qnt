@@ -13,7 +13,7 @@ module native_profiles {
     state' = finish(state, "complete", 1, 0),
     state' = finish(state, "rollback", 1, 0),
     state' = finalize(state),
-    state' = restore(state, state, true),
+    state' = restore(state, checkpoint(state), true),
   }
 
   // Reachable fixture: register -> begin -> reserve cap 2 at price 1.
@@ -32,10 +32,11 @@ module native_profiles {
   action weakFlightInit = state' = inspect(begin(register(initial(true, 0), 1, 1, 0, 1)))
   action weakFlightStep = state' = control(state, 1, 1, "cancel", 0, true)
 
-  // Omitted metadata validation: lose the ready index while keeping the task.
-  // This is an operator-corruption test, not authenticated snapshot forgery.
-  action weakRestoreInit = state' = begin(register(initial(true, 1), 1, 1, 1, 1))
-  action weakRestoreStep = state' = restore(state, state.with("queue", Set()), false)
+  // Omitted reconstruction: a valid durable checkpoint is loaded, but discarded
+  // ready/due indexes are not rebuilt. The next block loses runnable work.
+  // This is a deliberate model mutation, not an implementation vulnerability.
+  action weakRestoreInit = state' = register(initial(true, 1), 1, 1, 1, 1)
+  action weakRestoreStep = state' = restore(state, checkpoint(state), false)
 
   // Recorded witnesses avoid claiming that all scenario branches were visited
   // merely because a seeded random simulation completed.
