@@ -772,8 +772,11 @@ version = "0.1.0"
 dependencies = [
  "cosmwasm-std",
  "cw-multi-test",
+ "dca-example-protocol",
+ "mock-exchange",
  "native-async",
  "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

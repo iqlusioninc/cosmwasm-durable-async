@@ -10,7 +10,11 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 cosmwasm-std.workspace = true
 serde.workspace = true
+thiserror.workspace = true
+native-async = { path = "../../crates/native-async" }
+dca-example-protocol = { path = "../dca-protocol" }
 
 [dev-dependencies]
 cw-multi-test = "2.5"
 native-async = { path = "../../crates/native-async", features = ["host"] }
+mock-exchange = { path = "../mock-exchange" }
