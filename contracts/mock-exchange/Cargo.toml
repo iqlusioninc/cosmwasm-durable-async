@@ -1,0 +1,17 @@
+[package]
+name = "mock-exchange"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-std.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+dca-example-protocol = { path = "../dca-protocol" }
+
+[dev-dependencies]
+cw-multi-test = "2.5"
