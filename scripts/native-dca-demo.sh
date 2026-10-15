@@ -14,6 +14,7 @@ if [[ -z "${NATIVE_DCA_OUTPUT:-}" ]]; then
   NATIVE_DCA_OUTPUT="$(mktemp -d "${TMPDIR:-/tmp}/native-dca-demo.XXXXXX")"
 fi
 [[ -d "$NATIVE_DCA_OUTPUT" ]] || { echo 'NATIVE_DCA_OUTPUT must name an existing directory' >&2; exit 2; }
+NATIVE_DCA_OUTPUT="$(cd "$NATIVE_DCA_OUTPUT" && pwd -P)"
 export NATIVE_DCA_OUTPUT
 printf 'Local test-token scenarios: %s\nReceipts and logs: %s\n' "$scenario" "$NATIVE_DCA_OUTPUT"
 bash contracts/native-dca/build-wasmd.sh

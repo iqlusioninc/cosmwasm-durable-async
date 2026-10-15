@@ -533,7 +533,10 @@ func runDCAScenario(t *testing.T, h *nativeDCADemo, name string) {
 		require.Equal(t, dcaInt(t, paused.State.Funding.Available).Add(quote).String(), topped.State.Funding.Available)
 		h.control("resume_task")
 		h.snapshot("owner resumed")
-		h.until("funded completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		completed := h.until("funded completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		require.Equal(t, uint32(3), completed.State.Order.FilledCount)
+		require.Equal(t, "0", completed.State.Order.Remaining)
+		require.JSONEq(t, `"Filled"`, string(completed.State.Task.Output))
 	case "liquidity":
 		paused := h.until("empty output liquidity", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "paused" })
 		require.Equal(t, "message_failure", paused.State.Task.Status.Reason)
@@ -545,7 +548,10 @@ func runDCAScenario(t *testing.T, h *nativeDCADemo, name string) {
 		require.Equal(t, paused.State.Task, replenished.State.Task)
 		h.control("resume_task")
 		h.snapshot("owner resumed after liquidity repair")
-		h.until("liquidity recovery completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		completed := h.until("liquidity recovery completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		require.Equal(t, uint32(3), completed.State.Order.FilledCount)
+		require.Equal(t, "0", completed.State.Order.Remaining)
+		require.JSONEq(t, `"Filled"`, string(completed.State.Task.Output))
 	case "cancel":
 		filled := h.until("one fill before cancellation", func(s demoSnapshot) bool { return s.State.Order.FilledCount == 1 })
 		h.control("cancel_task")
@@ -596,6 +602,9 @@ func runDCAScenario(t *testing.T, h *nativeDCADemo, name string) {
 		require.Equal(t, uint32(1), consumed.State.Order.FilledCount)
 		require.Equal(t, before.State.Order, consumed.State.Order)
 		require.Equal(t, before.Fills, consumed.Fills)
-		h.until("restarted completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		completed := h.until("restarted completion", func(s demoSnapshot) bool { return s.State.Task.Status.Kind == "completed" })
+		require.Equal(t, uint32(3), completed.State.Order.FilledCount)
+		require.Equal(t, "0", completed.State.Order.Remaining)
+		require.JSONEq(t, `"Filled"`, string(completed.State.Task.Output))
 	}
 }

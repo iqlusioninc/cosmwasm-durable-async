@@ -1,8 +1,9 @@
 # Native DCA implementation verification — 2026-10-15
 
 Implementation and the commands below pass in the isolated macOS arm64 worktree.
-Tasks 1–6 have independent task reviews. **Task 7 and the final whole-change
-review remain pending with the controller.** This receipt is not review approval,
+Tasks 1–6 have independent task reviews. The whole-change review reported no
+Critical/Important findings and two scoped runner/test fixes. **Those fixes await
+controller re-review; Task 7 and final approval remain pending.** This receipt is not review approval,
 a production-readiness claim, or permission to publish/deploy.
 
 ## Source and artifact identity
@@ -24,11 +25,12 @@ commit with `git log -1 --format=%H -- integration/wasmd/dca_demo_node_test.go`.
 
 | Tested source | SHA256 |
 | --- | --- |
-| `integration/wasmd/dca_demo_test.go` | `9f58e849566016628eafc9add5885cbed0cdf97780dfa4524dec894f538a2665` |
+| `integration/wasmd/dca_demo_test.go` | `1b65456b1e0fba43e9105ab2f39e134edbd620aad6ece65d7301dd834ea9e967` |
 | `integration/wasmd/dca_demo_node_test.go` | `958e6890ae3be78778192577badf70dc07f2b72f0596f996de5c5387f05eacea` |
 | `integration/wasmd/dca_demo_journal_test.go` | `27897c17da9c01f7893ba58e68dd20659fdb0d4e09b9fef14d4bdf904aff3476` |
 | `integration/wasmd/dca_acceptance_test.go` | `3891836cccb3487a1ebe8d5da295d029a3aca2e77113d56f33047e49ec40b725` |
-| `scripts/native-dca-demo.sh` | `cc77bad9bd936430275fca59b8fcdee69095f08b70bde2070657577b35ad238a` |
+| `scripts/native-dca-demo.sh` | `a46a646bb1d56b17bf24820aee63e5db9921224b033c006820f4663918fd0a11` |
+| `scripts/native-dca-demo-test.sh` | `529b1b480d6952b8ea3c14205aa4a1f29ce1cd6a19a5bde2e20a0e872c3ee4d4` |
 | `integration/wasmd/test-upstream.sh` | `57d647c7db456723f3817a2c436d533acaac2a1ab5ac6e61c31015fbc27bd384` |
 
 Both builders were rerun after implementation. All artifact hashes match Task 6:
@@ -131,6 +133,42 @@ small receipts/logs/journals, not additional chain databases or build trees.
 The cleanup regression separately confirms an unrelated child remains alive.
 
 ## Journal and restart failure evidence
+
+### Final-review fix checks
+
+The existing output directory is now canonicalized before export and the later
+runner `cd`. `bash scripts/native-dca-demo-test.sh` first failed against the
+original runner (`wrong output directory after cd: output with spaces`), then
+passed after the fix. It executes the actual runner with builder/Go boundaries
+stubbed, verifies the existing relative path containing spaces and receipt
+creation after the working-directory change, and starts no VM/validator.
+
+Funding, liquidity and restart now require final business count 3, remaining
+principal `0`, and task output `"Filled"`, independently of host completion.
+Test-only mutations of count to 2, principal to `10`, and output to
+`"LeaseWindowExhausted"` each failed at its new assertion (three failing
+subtests, 28.526s). All mutations were removed; no runtime/contract changes.
+
+With the prepared environment above and
+`NATIVE_DCA_OUTPUT=/private/tmp/native-dca-final.IVbzgG`, fresh checks pass:
+
+```sh
+bash scripts/native-dca-demo-test.sh
+bash -n scripts/native-dca-demo.sh scripts/native-dca-demo-test.sh \
+  scripts/wasmd-normalize.sh contracts/native-dca/build-wasmd.sh
+gofmt -l integration/wasmd/dca_demo_test.go
+bash scripts/native-dca-demo.sh all
+git diff --check
+```
+
+The final script all-run passes **40.907s**, all five subtests. DCA artifact
+hashes remain unchanged. Logs `fix-script-{red,green}.log`,
+`fix-assertion-mutation-red.log`, `fix-all-preliminary.log` (PASS40.527s), and
+`fix-script-all-green.log` are retained under that output directory. Final
+successful receipt directories are `happy-218204741`, `funding-723154199`,
+`liquidity-3086858592`, `cancel-1049176635`, `restart-2815838791`, all with
+`passed=true` and `owned_child_exited=true`. Failed mutation receipts remain
+failed evidence. These fixes await controller scoped re-review/final approval.
 
 The journal's compilable stubs first produced eight semantic RED failures;
 implementation and race checks then passed. Coverage includes lost response,
