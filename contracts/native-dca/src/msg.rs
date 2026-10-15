@@ -67,6 +67,13 @@ pub struct RegisterReplyPayload {
     pub order_id: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DispatchReplyPayload {
+    pub order_id: u64,
+    pub slice_index: u32,
+    pub correlation: Correlation,
+}
+
 /// Matches the generated workflow's single argument input envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowInput {

@@ -91,6 +91,15 @@ fn native_adapter_conserves_fees_using_fixed_logical_gas() {
 #[test]
 fn native_adapter_rejects_account_custom_messages() {
     let mut suite = Suite::new();
+    // Supply the later immutable identity check so removing the provenance
+    // boundary would actually admit this otherwise valid registration.
+    let owner = suite.owner.clone();
+    suite.app.init_modules(|router, _, _| {
+        router.custom.identities.insert(
+            owner.to_string(),
+            Binary::from(b"known-account-test-identity".as_slice()),
+        );
+    });
     let before = suite
         .app
         .wrap()
@@ -113,7 +122,8 @@ fn native_adapter_rejects_account_custom_messages() {
             allocated_bytes: 20_000,
         }),
     );
-    assert!(result.is_err());
+    let error = result.unwrap_err();
+    assert!(format!("{error:#}").contains("ContractData"), "{error:#}");
     assert_eq!(
         suite
             .app
@@ -194,7 +204,15 @@ fn native_adapter_rolls_back_nested_failure() {
     let mut suite = Suite::new();
     suite.register(true);
     let before = suite.business_balances();
-    assert_eq!(suite.block(2).unwrap().polls, 1);
+    let report = suite.block(2).unwrap();
+    assert_eq!(report.polls, 1);
+    assert_eq!(report.gas_used, 14);
+    assert_eq!(suite.funding().cumulative_execution_fees, Uint128::new(14));
+    assert_eq!(suite.funding().available, Uint128::new(985));
+    assert_eq!(
+        suite.app.wrap().query_balance(&suite.fees, "ugas").unwrap(),
+        coin(15, "ugas")
+    );
     assert_eq!(suite.business_balances(), before);
     assert_eq!(suite.writes(), (None, None, None));
     assert!(matches!(

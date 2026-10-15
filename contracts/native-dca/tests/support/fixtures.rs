@@ -3,6 +3,201 @@ use cw_multi_test::{Contract, ContractWrapper};
 use native_async::*;
 use serde::{Deserialize, Serialize};
 
+pub const FAULT_KEY: &[u8] = b"dca-test/fault";
+pub const PROXY_KEY: &[u8] = b"dca-test/proxy";
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Fault {
+    None,
+    Omit,
+    Duplicate,
+    Stale,
+    WrongOrder,
+    WrongSlice,
+    WrongTask,
+    WrongSender,
+    InputAmount,
+    InputDenom,
+    OutputDenom,
+    Beneficiary,
+    BelowMinimum,
+    BankFailure,
+    DeliveryFailure,
+    ReplyFailure,
+    ReplyCrossOrder,
+    ReplyReplay,
+    Pad2048,
+    Pad2049,
+    RemoteError,
+}
+fn fault(storage: &dyn Storage) -> StdResult<Fault> {
+    storage
+        .get(FAULT_KEY)
+        .map(from_json)
+        .transpose()
+        .map(|value| value.unwrap_or(Fault::None))
+}
+
+/// Delegates real exchange validation, accounting and receipt storage, then
+/// injects a fault into the actual nested message chain.
+pub fn faulty_exchange() -> Box<dyn Contract<RuntimeMsg, RuntimeQuery>> {
+    fn execute(
+        mut deps: DepsMut,
+        env: Env,
+        info: MessageInfo,
+        msg: dca_example_protocol::ExchangeExecuteMsg,
+    ) -> StdResult<Response> {
+        let mode = fault(deps.storage)?;
+        let proxy: Option<String> = deps.storage.get(PROXY_KEY).map(from_json).transpose()?;
+        let mut response = mock_exchange::execute(deps.branch(), env, info, msg)
+            .map_err(|e| StdError::generic_err(e.to_string()))?;
+        if mode == Fault::Omit {
+            response.messages.pop();
+        } else if mode == Fault::Duplicate {
+            response.messages.push(response.messages[1].clone());
+        } else if mode == Fault::BankFailure {
+            if let CosmosMsg::Bank(BankMsg::Send { amount, .. }) = &mut response.messages[0].msg {
+                amount[0].amount = Uint128::MAX;
+            }
+        } else if mode != Fault::None {
+            if let CosmosMsg::Wasm(WasmMsg::Execute {
+                msg, contract_addr, ..
+            }) = &mut response.messages[1].msg
+            {
+                let dca_example_protocol::DcaCallbackMsg::SwapResult { mut receipt } =
+                    from_json(msg.clone())?;
+                match mode {
+                    Fault::Stale => receipt.correlation.wait_sequence += 1,
+                    Fault::WrongOrder => receipt.order_id += 1,
+                    Fault::WrongSlice => receipt.slice_index += 1,
+                    Fault::WrongTask => receipt.correlation.workflow_id += 1,
+                    Fault::InputAmount => receipt.input.amount += Uint128::one(),
+                    Fault::InputDenom => receipt.input.denom = "uwrong".into(),
+                    Fault::OutputDenom => receipt.output.denom = "uwrong".into(),
+                    Fault::Beneficiary => receipt.beneficiary = proxy.clone().unwrap(),
+                    Fault::BelowMinimum => receipt.output.amount = Uint128::one(),
+                    _ => {}
+                }
+                *msg =
+                    to_json_binary(&dca_example_protocol::DcaCallbackMsg::SwapResult { receipt })?;
+                if mode == Fault::WrongSender {
+                    *msg = to_json_binary(&Relay {
+                        target: contract_addr.clone(),
+                        msg: msg.clone(),
+                    })?;
+                    *contract_addr =
+                        proxy.ok_or_else(|| StdError::generic_err("missing fault relay"))?;
+                }
+            }
+        }
+        Ok(response)
+    }
+    Box::new(ContractWrapper::new_with_empty(
+        execute,
+        mock_exchange::instantiate,
+        mock_exchange::query,
+    ))
+}
+
+pub fn faulty_dca() -> Box<dyn Contract<RuntimeMsg, RuntimeQuery>> {
+    fn execute(
+        mut deps: DepsMut<RuntimeQuery>,
+        env: Env,
+        info: MessageInfo,
+        msg: native_dca::msg::ExecuteMsg,
+    ) -> Result<Response<RuntimeMsg>, native_dca::error::ContractError> {
+        let mode = fault(deps.storage)?;
+        let callback = matches!(&msg, native_dca::msg::ExecuteMsg::SwapResult { .. });
+        let mut response = native_dca::execute(deps.branch(), env, info, msg)?;
+        if callback {
+            for message in &mut response.messages {
+                if let CosmosMsg::Custom(RuntimeMsg::Deliver {
+                    wait_sequence,
+                    resolution,
+                    ..
+                }) = &mut message.msg
+                {
+                    if mode == Fault::DeliveryFailure {
+                        *wait_sequence += 1;
+                    }
+                    if mode == Fault::RemoteError {
+                        *resolution = Resolution::Error {
+                            code: "\"\\".repeat(128),
+                            message: "\"\\".repeat(512),
+                        };
+                    }
+                    if let Resolution::Success { data } = resolution {
+                        let size = match mode {
+                            Fault::Pad2048 => 2048,
+                            Fault::Pad2049 => 2049,
+                            _ => data.len(),
+                        };
+                        let mut bytes = data.to_vec();
+                        bytes.resize(size, b' ');
+                        *data = bytes.into();
+                    }
+                }
+            }
+        }
+        Ok(response)
+    }
+    fn reply(
+        mut deps: DepsMut<RuntimeQuery>,
+        env: Env,
+        mut msg: Reply,
+    ) -> Result<Response<RuntimeMsg>, native_dca::error::ContractError> {
+        let mode = fault(deps.storage)?;
+        if msg.id == 2 && mode == Fault::ReplyFailure {
+            msg.payload = Binary::from(b"{}".as_slice());
+        }
+        if msg.id == 2 && mode == Fault::ReplyCrossOrder {
+            let mut payload: native_dca::msg::DispatchReplyPayload = from_json(&msg.payload)?;
+            payload.order_id += 1;
+            msg.payload = to_json_binary(&payload)?;
+        }
+        if msg.id == 2 && mode == Fault::ReplyReplay {
+            native_dca::reply(deps.branch(), env.clone(), msg.clone())?;
+        }
+        native_dca::reply(deps, env, msg)
+    }
+    Box::new(
+        ContractWrapper::new(execute, native_dca::instantiate, native_dca::query)
+            .with_reply(reply)
+            .with_sudo_empty(native_dca::sudo),
+    )
+}
+
+#[derive(Serialize, Deserialize)]
+struct Relay {
+    target: String,
+    msg: Binary,
+}
+pub fn relay() -> Box<dyn Contract<RuntimeMsg, RuntimeQuery>> {
+    fn instantiate(
+        _: DepsMut<RuntimeQuery>,
+        _: Env,
+        _: MessageInfo,
+        _: Empty,
+    ) -> StdResult<Response<RuntimeMsg>> {
+        Ok(Response::new())
+    }
+    fn execute(
+        _: DepsMut<RuntimeQuery>,
+        _: Env,
+        _: MessageInfo,
+        msg: Relay,
+    ) -> StdResult<Response<RuntimeMsg>> {
+        Ok(Response::new().add_message(WasmMsg::Execute {
+            contract_addr: msg.target,
+            msg: msg.msg,
+            funds: vec![],
+        }))
+    }
+    fn query(_: Deps<RuntimeQuery>, _: Env, _: Empty) -> StdResult<Binary> {
+        to_json_binary(&())
+    }
+    Box::new(ContractWrapper::new(execute, instantiate, query))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Execute {
     Register { fail: bool },

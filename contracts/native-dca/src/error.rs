@@ -5,6 +5,8 @@ use thiserror::Error;
 pub enum ContractError {
     #[error("{0}")]
     Std(#[from] StdError),
+    #[error("{0}")]
+    Runtime(#[from] durable_runtime::RuntimeError),
     #[error("only the order owner may manage principal or budget")]
     Unauthorized,
     #[error("this call does not accept funds")]
@@ -23,6 +25,6 @@ pub enum ContractError {
     NotTerminal,
     #[error("order has no remaining principal")]
     EmptyPrincipal,
-    #[error("slice settlement is not available before the workflow is installed")]
-    SettlementUnavailable,
+    #[error("invalid slice settlement or staged task identity")]
+    Settlement,
 }

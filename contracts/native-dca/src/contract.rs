@@ -88,9 +88,13 @@ pub fn execute(
             )?)
         }
         ExecuteMsg::ReclaimPrincipal { order_id } => reclaim(deps, env, info, order_id),
-        ExecuteMsg::DispatchSlice { .. } | ExecuteMsg::SwapResult { .. } => {
-            no_funds(&info)?;
-            Err(ContractError::SettlementUnavailable)
+        ExecuteMsg::DispatchSlice {
+            order_id,
+            slice_index,
+            correlation,
+        } => crate::settlement::dispatch_slice(deps, env, info, order_id, slice_index, correlation),
+        ExecuteMsg::SwapResult { receipt } => {
+            crate::settlement::swap_result(deps, env, info, receipt)
         }
     }
 }
@@ -100,6 +104,9 @@ pub fn reply(
     env: Env,
     reply: Reply,
 ) -> Result<Response<RuntimeMsg>, ContractError> {
+    if reply.id == crate::settlement::DISPATCH_REPLY {
+        return crate::settlement::dispatch_reply(deps, env, reply);
+    }
     if reply.id != REGISTER_REPLY {
         return Err(ContractError::InvalidReply);
     }
@@ -135,6 +142,26 @@ pub fn reply(
             task_id,
         })?),
     )
+}
+
+/// Privileged host-only workflow entrypoint. Never routed through execute.
+#[entry_point]
+pub fn sudo(
+    deps: DepsMut,
+    env: Env,
+    msg: native_async::TaskSudoMsg,
+) -> Result<Response, ContractError> {
+    let native_async::TaskSudoMsg::PollTask(request) = msg;
+    let registry = durable_runtime::Registry::new(vec![durable_runtime::registration::<
+        crate::workflow::native_dca::Workflow,
+    >()])?;
+    Ok(durable_runtime::native::poll(
+        deps,
+        env,
+        request,
+        &registry,
+        MAX_RESULT_BYTES,
+    )?)
 }
 #[entry_point]
 pub fn query(deps: Deps<RuntimeQuery>, env: Env, msg: QueryMsg) -> StdResult<Binary> {

@@ -33,6 +33,7 @@ pub struct DcaSuite {
     pub contract: Addr,
     pub exchange: Addr,
     pub fee_denom: String,
+    pub fault_fixtures: bool,
 }
 
 pub fn dca_contract() -> Box<dyn Contract<RuntimeMsg, RuntimeQuery>> {
@@ -42,7 +43,8 @@ pub fn dca_contract() -> Box<dyn Contract<RuntimeMsg, RuntimeQuery>> {
             native_dca::instantiate,
             native_dca::query,
         )
-        .with_reply(native_dca::reply),
+        .with_reply(native_dca::reply)
+        .with_sudo_empty(native_dca::sudo),
     )
 }
 
@@ -51,6 +53,12 @@ impl DcaSuite {
         Self::with_fee_denom("ugas")
     }
     pub fn with_fee_denom(fee_denom: &str) -> Self {
+        Self::build(fee_denom, false)
+    }
+    pub fn with_faults() -> Self {
+        Self::build("ugas", true)
+    }
+    fn build(fee_denom: &str, fault_fixtures: bool) -> Self {
         let mut app = app();
         app.update_block(|block| block.height = 1);
         let owner = app.api().addr_make("dca-owner");
@@ -73,11 +81,15 @@ impl DcaSuite {
                     .unwrap();
             }
         });
-        let exchange_code = app.store_code(Box::new(ContractWrapper::new_with_empty(
-            mock_exchange::execute,
-            mock_exchange::instantiate,
-            mock_exchange::query,
-        )));
+        let exchange_code = app.store_code(if fault_fixtures {
+            fixtures::faulty_exchange()
+        } else {
+            Box::new(ContractWrapper::new_with_empty(
+                mock_exchange::execute,
+                mock_exchange::instantiate,
+                mock_exchange::query,
+            ))
+        });
         let exchange = app
             .instantiate_contract(
                 exchange_code,
@@ -95,7 +107,11 @@ impl DcaSuite {
             .unwrap();
         app.send_tokens(owner.clone(), exchange.clone(), &[coin(100_000, "uoutput")])
             .unwrap();
-        let code = app.store_code(dca_contract());
+        let code = app.store_code(if fault_fixtures {
+            fixtures::faulty_dca()
+        } else {
+            dca_contract()
+        });
         let contract = app
             .instantiate_contract(
                 code,
@@ -109,6 +125,23 @@ impl DcaSuite {
                 None,
             )
             .unwrap();
+        if fault_fixtures {
+            let relay_code = app.store_code(fixtures::relay());
+            let relay = app
+                .instantiate_contract(
+                    relay_code,
+                    owner.clone(),
+                    &Empty {},
+                    &[],
+                    "fault-relay",
+                    None,
+                )
+                .unwrap();
+            app.contract_storage_mut(&exchange).set(
+                fixtures::PROXY_KEY,
+                &to_json_vec(&relay.to_string()).unwrap(),
+            );
+        }
         app.init_modules(|router, _, _| {
             router.custom.identities.insert(
                 contract.to_string(),
@@ -123,6 +156,7 @@ impl DcaSuite {
             contract,
             exchange,
             fee_denom: fee_denom.into(),
+            fault_fixtures,
         }
     }
     pub fn request(&self) -> native_dca::msg::CreateOrderRequest {
@@ -215,6 +249,115 @@ impl DcaSuite {
             .take()
             .expect("custom sudo returned report");
         Ok(report)
+    }
+    pub fn set_fault(&mut self, mode: fixtures::Fault) {
+        for address in [&self.contract, &self.exchange] {
+            self.app
+                .contract_storage_mut(address)
+                .set(fixtures::FAULT_KEY, &to_json_vec(&mode).unwrap());
+        }
+    }
+    pub fn fill(&self, order_id: u64, slice_index: u32) -> Option<native_dca::state::FillRecord> {
+        self.app
+            .wrap()
+            .query_wasm_smart(
+                &self.contract,
+                &native_dca::msg::QueryMsg::Fill {
+                    order_id,
+                    slice_index,
+                },
+            )
+            .unwrap()
+    }
+    pub fn receipt(
+        &self,
+        order_id: u64,
+        slice_index: u32,
+    ) -> Option<dca_example_protocol::SwapReceipt> {
+        self.app
+            .wrap()
+            .query_wasm_smart(
+                &self.exchange,
+                &dca_example_protocol::ExchangeQueryMsg::Receipt {
+                    dca: self.contract.to_string(),
+                    order_id,
+                    slice_index,
+                },
+            )
+            .unwrap()
+    }
+    pub fn conservation(&self, order_id: u64) {
+        let order = self.order(order_id).order;
+        assert_eq!(
+            order.initial_principal,
+            order.spent + order.remaining + order.reclaimed
+        );
+        assert!(order.pending.is_none());
+        assert!(order.filled_count <= order.slice_count);
+        for index in 0..order.slice_count {
+            let fill = self.fill(order_id, index);
+            let receipt = self.receipt(order_id, index);
+            assert_eq!(fill.is_some(), index < order.filled_count);
+            assert_eq!(receipt, fill.map(|fill| fill.receipt));
+        }
+    }
+    pub fn reconstruct(&mut self) -> AnyResult<()> {
+        let records: Vec<_> = self
+            .app
+            .storage()
+            .range(None, None, Order::Ascending)
+            .collect();
+        let block = self.app.block_info();
+        let mut rebuilt = app();
+        assert_eq!(
+            rebuilt.store_code(if self.fault_fixtures {
+                fixtures::faulty_exchange()
+            } else {
+                Box::new(ContractWrapper::new_with_empty(
+                    mock_exchange::execute,
+                    mock_exchange::instantiate,
+                    mock_exchange::query,
+                ))
+            }),
+            1
+        );
+        assert_eq!(
+            rebuilt.store_code(if self.fault_fixtures {
+                fixtures::faulty_dca()
+            } else {
+                dca_contract()
+            }),
+            2
+        );
+        if self.fault_fixtures {
+            assert_eq!(rebuilt.store_code(fixtures::relay()), 3);
+        }
+        for (key, value) in records {
+            rebuilt.storage_mut().set(&key, &value);
+        }
+        rebuilt.set_block(block);
+        assert_eq!(
+            rebuilt
+                .wrap()
+                .query_wasm_contract_info(&self.contract)?
+                .code_id,
+            2
+        );
+        assert_eq!(
+            rebuilt
+                .wrap()
+                .query_wasm_contract_info(&self.exchange)?
+                .code_id,
+            1
+        );
+        rebuilt.init_modules(|router, _, _| {
+            router.custom.identities.insert(
+                self.contract.to_string(),
+                Binary::from(b"immutable-rust-native-dca-v1".as_slice()),
+            );
+        });
+        self.app = rebuilt;
+        Ok(())
     }
 }
 fn app() -> TestApp {

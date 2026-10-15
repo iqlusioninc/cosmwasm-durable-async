@@ -12,6 +12,8 @@ cosmwasm-std.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 native-async = { path = "../../crates/native-async" }
+durable-runtime = { path = "../../crates/durable-runtime", features = ["native"] }
+durable-macro = { path = "../../crates/durable-macro" }
 dca-example-protocol = { path = "../dca-protocol" }
 
 [dev-dependencies]

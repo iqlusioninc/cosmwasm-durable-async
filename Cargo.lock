@@ -773,6 +773,8 @@ dependencies = [
  "cosmwasm-std",
  "cw-multi-test",
  "dca-example-protocol",
+ "durable-macro",
+ "durable-runtime",
  "mock-exchange",
  "native-async",
  "serde",

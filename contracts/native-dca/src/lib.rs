@@ -2,5 +2,7 @@
 pub mod contract;
 pub mod error;
 pub mod msg;
+pub mod settlement;
 pub mod state;
-pub use contract::{execute, instantiate, query, reply};
+pub mod workflow;
+pub use contract::{execute, instantiate, query, reply, sudo};
