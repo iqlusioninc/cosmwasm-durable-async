@@ -38,7 +38,11 @@ cd "$workspace_dir"
 go work init "$adapter_dir" "$upstream_dir" "$NATIVE_ASYNC_VM"
 export GOWORK="$workspace_dir/go.work"
 cd "$adapter_dir"
-go test -tags upstream -count=1 ./...
+if [[ -n "${NATIVE_ASYNC_TEST_RUN:-}" ]]; then
+  go test -tags upstream -count=1 -run "$NATIVE_ASYNC_TEST_RUN" ./...
+else
+  go test -tags upstream -count=1 ./...
+fi
 if [[ "${NATIVE_ASYNC_KEEP:-0}" == 1 ]]; then
   printf 'Patched wasmd checkout: %s\n' "$upstream_dir"
   printf 'Patched VM checkout: %s\nGOWORK=%s\n' "$NATIVE_ASYNC_VM" "$GOWORK"

@@ -2,8 +2,11 @@
 
 Date: 2026-10-15
 
-Status: written design approved by the user on 2026-10-15. The implementation
-plan is the next review artifact; product implementation has not started.
+Status updated 2026-10-15: design and implementation plan approved; Tasks 1–6
+implemented, committed and independently reviewed. Task 7 runner, tutorial and
+verification are implemented; final whole-change review remains pending with
+the controller. See the [verification receipt](../../reviews/2026-10-15-native-dca-verification.md)
+for exact sources, artifacts, commands and evidence boundaries.
 
 ## Purpose and scope
 
@@ -232,7 +235,8 @@ of collapsing these last two states.
 
 ## Validation and runnable demonstrations
 
-Tests are requirements for implementation, not results reported by this spec.
+The numbered groups remain the acceptance requirements. The verification receipt
+maps them to actual test evidence; this spec alone is not a test-result claim.
 Use transactional harnesses for rollback claims, not bare `MockStorage` calls.
 
 1. Happy path: three trades over multiple blocks, exact bank balances, receipts,
@@ -262,6 +266,21 @@ broadcast outcomes rather than automatically resubmitting. It provides separate
 happy-path, low-gas/top-up/resume, liquidity-failure, cancellation/reclaim and
 restart scenarios, with clean owned-process shutdown. A simulation-only result
 must not be labeled as a real-node restart or state-sync result.
+
+The implemented local validator uses test-only deterministic block permits;
+normal Comet consensus/ABCI and signed RPC transactions perform its transitions.
+It is not free-running cadence or performance evidence. A separate persisted
+selected-fill gate prevents the next FinalizeBlock. Since Comet handshake replay
+precedes RPC startup, the reopened child records fresh PID-bound committed app
+queries before replay, using its exact saved committed header validated against
+the reopened height/app hash. The parent compares order, task, funding, fills,
+balances and root before release; live RPC then checks normal replay without
+another trade. This observation does not reconstruct or alter runtime state.
+
+The existing public ABCI response omits scheduler `async_poll` events. RPC demo
+observations use authoritative task funding/bank state. Real-VM acceptance may
+observe genuine context events before Commit as separately labeled test
+instrumentation; no event-propagation runtime repair is part of this example.
 
 New DCA state-sync-network and Quint model extensions are follow-up verification
 work, not implied by the existing runtime model or by database-reopen coverage.

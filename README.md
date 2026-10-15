@@ -45,6 +45,7 @@ The workspace contains:
 | `fulfill-example` | Two-wait contract and transactional integration tests |
 | `native-async` | Native poll ABI, funding SDK, and persisted reference scheduler |
 | `native-fulfill-example` | Generated workflows exposed through the native poll and funding interfaces |
+| `native-dca` / `mock-exchange` | Finite scheduled trades and an immutable fixed-price local test fixture |
 
 ## Checkpoints and restrictions
 
@@ -91,6 +92,15 @@ A propagated application error is recorded as terminal `Failed` while the entry 
 The transaction-driven example has no background executor or cancellation. Neither execution path promises exactly-once off-chain delivery or automatic compensation. Runtime limits bound active instance counts and serialized payload sizes, but synchronous segment execution remains subject to chain gas limits. The transaction-driven path requires explicit expiration transactions and retains terminal records; the native path has bounded expiry/pruning and prepaid retention.
 
 ## Design and verification scope
+
+For a runnable native example, see the [local DCA tutorial](contracts/native-dca/README.md).
+From the repository root, `bash scripts/native-dca-demo.sh all` builds the test
+artifacts and runs happy-path, gas funding, liquidity recovery, cancellation and
+process-restart scenarios against a patched local validator. First-run downloads,
+prerequisites and reuse instructions are in the tutorial and the
+[adapter guide](integration/wasmd/README.md#local-dca-scenarios). This uses only
+local test coins and deterministic test-only block permits; it is not a market,
+free-running cadence benchmark or production deployment.
 
 The [native CosmWasm async design](docs/superpowers/specs/2026-10-11-native-cosmwasm-async-design.md) describes chain-managed tasks, block scheduling, prepaid gas, and durable wakeups. The [dynamic implementation plan](docs/superpowers/plans/2026-10-11-native-async-runtime.md) tracks implementation and acceptance gates; the design's full production validation criteria are not implied by unit tests.
 
