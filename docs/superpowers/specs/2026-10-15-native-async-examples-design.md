@@ -2,8 +2,8 @@
 
 Date: 2026-10-15
 
-Status: proposed written design; the example direction and DCA-first ordering
-are approved, but this document and implementation plan still require review.
+Status: written design approved by the user on 2026-10-15. The implementation
+plan is the next review artifact; product implementation has not started.
 
 ## Purpose and scope
 
