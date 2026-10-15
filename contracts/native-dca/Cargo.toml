@@ -7,6 +7,10 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[example]]
+name = "dca_fault"
+crate-type = ["cdylib"]
+
 [dependencies]
 cosmwasm-std.workspace = true
 serde.workspace = true
@@ -16,7 +20,7 @@ durable-runtime = { path = "../../crates/durable-runtime", features = ["native"]
 durable-macro = { path = "../../crates/durable-macro" }
 dca-example-protocol = { path = "../dca-protocol" }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 cw-multi-test = "2.5"
 native-async = { path = "../../crates/native-async", features = ["host"] }
 mock-exchange = { path = "../mock-exchange" }
