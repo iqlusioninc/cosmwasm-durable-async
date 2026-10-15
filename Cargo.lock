@@ -421,6 +421,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dca-example-protocol"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "durable-runtime",
+ "serde",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
