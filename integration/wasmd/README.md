@@ -6,10 +6,12 @@ The Go module checksums are committed. Go 1.27.2 compiles the packages but canno
 link this dependency graph (`encoding/json.unquoteBytes` in upstream sonic), so
 the scripts explicitly select 1.23.6.
 
-Build all three real Rust artifacts using `contracts/native-fulfill/build-wasmd.sh`
-from the repository root, then run:
+Build both real Rust artifact sets from the repository root, then run the full
+keeper/app suite (which now includes DCA acceptance):
 
 ```sh
+bash contracts/native-fulfill/build-wasmd.sh
+bash contracts/native-dca/build-wasmd.sh
 bash integration/wasmd/test.sh
 ```
 
@@ -28,6 +30,94 @@ that Go incorrectly treated as already downloaded. The upstream script copies a
 fresh, checksum-verified module checkout, applies exact-anchor transformations,
 compiles the actual app, creates a temporary Go workspace, and runs the app tests.
 It does not modify upstream module caches or vendor third-party source here.
+
+## Local DCA scenarios
+
+The [native DCA tutorial](../../contracts/native-dca/README.md) describes the
+order API, queries, funding and recovery rules. From the repository root:
+
+```sh
+bash scripts/native-dca-demo.sh happy
+bash scripts/native-dca-demo.sh funding
+bash scripts/native-dca-demo.sh liquidity
+bash scripts/native-dca-demo.sh cancel
+bash scripts/native-dca-demo.sh restart
+bash scripts/native-dca-demo.sh all
+```
+
+The runner builds the normalized DCA/exchange/fault artifacts and invokes the
+opt-in `TestNativeDCADemo` with `NATIVE_DCA_DEMO=1` and
+`NATIVE_DCA_SCENARIO`. Its validator is a child of the current test executable
+linked to the patched app/VM, not a stock `wasmd` binary. Only loopback RPC and
+local test identities/assets are supported. It journals exact signed transaction
+bytes/hash before submission, persists the attempted state before broadcasting,
+and resolves uncertain responses by looking up the same hash. An unresolved
+outcome stops the scenario without rebroadcast. Cleanup targets only owned
+children and temporary paths.
+
+`NATIVE_DCA_OUTPUT` selects an existing directory for retained small receipts,
+journals and node logs; otherwise the script creates and prints one. Each
+scenario has a unique subdirectory and a `receipt.json` with committed snapshots
+and child-exit status. Chain homes/test validator keys are removed with the test
+temporary directories. The script always rebuilds DCA artifacts; with a valid
+retained `GOWORK` it reuses that host/VM and the selected `GOPATH`/`GOCACHE`.
+
+The build requirements and downloads are those described above and below.
+`contracts/native-dca/build-wasmd.sh` respects `CARGO_TARGET_DIR` and `WASM_OPT`;
+on macOS arm64 it can download checksum-verified Binaryen 123, and elsewhere it
+requires an explicit Binaryen 123 `WASM_OPT`. Cold upstream bootstrap downloads
+Go modules and CosmWasm v2.2.2 and compiles the patched native VM. Use
+`NATIVE_ASYNC_GOPATH`, `NATIVE_ASYNC_GOCACHE` and `NATIVE_ASYNC_CARGO_HOME` to
+reuse known complete dependency caches. `NATIVE_ASYNC_KEEP=1` retains bootstrap
+directories and prints the patched `GOWORK`; retained directories use several
+GB and must remain present for a targeted rerun.
+
+For a previously prepared, retained workspace, use the printed absolute
+`GOWORK`, the same `GOPATH`/`GOCACHE`, Go 1.23.6 and the existing artifacts.
+From `integration/wasmd`, the opt-in test invocation is:
+
+```sh
+NATIVE_DCA_DEMO=1 NATIVE_DCA_SCENARIO=happy \
+  go test -tags upstream -count=1 -v -run '^TestNativeDCADemo$' .
+```
+
+For a full bootstrap, the optional quoted `NATIVE_ASYNC_TEST_RUN` regex filters
+the Go tests; leaving it unset retains the full suite. The demo script selects
+`'^TestNativeDCADemo$'`. Retained caches alone do not skip the VM build; use the
+retained `GOWORK` to reuse the already patched host/VM.
+
+The five scenarios distinguish committed fills from host workflow completion,
+principal `uinput` from scheduler `ugas` and ordinary transaction fees `stake`,
+sponsor funding from owner resume, and cancellation from principal reclaim.
+State/funding/bank queries provide the RPC evidence: current public ABCI
+responses omit scheduler `async_poll` events. The runner uses deterministic
+test-only block permits plus a persisted gate after the selected fill commit
+and before the next FinalizeBlock for its process restart. This is a single
+local validator demonstration, not a free-running cadence/performance test or
+new DCA state-sync evidence. Engine failure injection, database close/reopen and
+child process restart are distinct acceptance boundaries.
+
+On restart, NewNode's handshake can replay the already decided next block before
+RPC starts. Fresh PID-bound committed queries from the reopened child are saved
+and compared before releasing the persisted gate; this is direct reopened-app
+query evidence, explicitly labeled separately from RPC. After release, normal
+handshake replay and live RPC establish no duplicate trade. The gate is never
+bypassed to make startup finish.
+The pre-handshake query context restores only its exact committed height/time
+header, saved after Commit and checked against the reopened height/app hash.
+Absent or mismatched metadata fails closed; post-handshake RPC contexts are
+unchanged. This is test instrumentation, not reconstruction of runtime state.
+
+The parent permits actual Comet consensus blocks; it never calls FinalizeBlock
+itself. Because the next empty block is already assembled at the gate, a signed
+RPC transaction is included by the normal mempool/proposal in the following
+block. The test verifies that exact registration height before relying on its
+lease quote. The example-local ABCI wrapper uses per-connection Comet clients
+and serializes app operations separately from its shutdown-aware gate, allowing
+committed RPC inspection while the next block waits. No production hook changes.
+
+The demo uses a strictly positive price floor. N1/N2/R1 remain open; neither
+these scenarios nor the tutorial claim a runtime repair or formal proof.
 
 ## Required native error boundary
 

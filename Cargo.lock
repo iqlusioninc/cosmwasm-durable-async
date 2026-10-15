@@ -421,6 +421,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dca-example-protocol"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "durable-runtime",
+ "serde",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -736,6 +745,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "mock-exchange"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "cw-multi-test",
+ "dca-example-protocol",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "native-async"
 version = "0.1.0"
 dependencies = [
@@ -744,6 +764,21 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "native-dca"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "cw-multi-test",
+ "dca-example-protocol",
+ "durable-macro",
+ "durable-runtime",
+ "mock-exchange",
+ "native-async",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

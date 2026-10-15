@@ -1,0 +1,13 @@
+[package]
+name = "dca-example-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+cosmwasm-std.workspace = true
+serde.workspace = true
+durable-runtime.workspace = true
