@@ -767,6 +767,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "native-dca"
+version = "0.1.0"
+dependencies = [
+ "cosmwasm-std",
+ "cw-multi-test",
+ "native-async",
+ "serde",
+]
+
+[[package]]
 name = "native-fulfill-example"
 version = "0.1.0"
 dependencies = [

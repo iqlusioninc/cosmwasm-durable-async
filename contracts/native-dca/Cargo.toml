@@ -1,0 +1,16 @@
+[package]
+name = "native-dca"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-std.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+cw-multi-test = "2.5"
+native-async = { path = "../../crates/native-async", features = ["host"] }
