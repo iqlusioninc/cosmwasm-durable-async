@@ -1,14 +1,15 @@
 # Native DCA implementation verification — 2026-10-15
 
 Implementation and the commands below pass in the isolated macOS arm64 worktree.
-Tasks 1–6 have independent task reviews. The whole-change review reported no
-Critical/Important findings and two scoped runner/test fixes. **Those fixes await
-controller re-review; Task 7 and final approval remain pending.** This receipt is not review approval,
-a production-readiness claim, or permission to publish/deploy.
+All seven tasks have independent spec-compliance and quality reviews. The
+whole-change review reported no Critical/Important findings; both minor
+runner/test findings were fixed and passed scoped re-review with no new issues.
+Fresh controller verification also passes. This closes the approved local-example
+implementation, not production readiness or permission to publish/deploy.
 
 ## Source and artifact identity
 
-Implementation commits before the tutorial:
+Implementation commits:
 
 | Task | Commit |
 | --- | --- |
@@ -18,6 +19,8 @@ Implementation commits before the tutorial:
 | Admission/custody | `f4f4b5b21ae5b62a698e095b3c01378e15ba163f` |
 | Workflow/settlement | `614b917ee3a1f60d22c3ad95d182a2ece1cc9752` |
 | Pinned Wasm acceptance | `3aec95b0af0fabefd13be70f31d2b9c24edd5bd8` |
+| Tutorial and journal | `fa260ebfa0e6a9ec6148561630740a3a7a0bfd74` |
+| Final review fixes | `a4521323b4195d5e0e3b654cd70f55d257ef25ed` |
 
 The Task 7 commit containing this receipt adds the runner, journals and tutorial;
 its tested executable sources are identified independently below. Resolve that
@@ -168,7 +171,36 @@ hashes remain unchanged. Logs `fix-script-{red,green}.log`,
 successful receipt directories are `happy-218204741`, `funding-723154199`,
 `liquidity-3086858592`, `cancel-1049176635`, `restart-2815838791`, all with
 `passed=true` and `owned_child_exited=true`. Failed mutation receipts remain
-failed evidence. These fixes await controller scoped re-review/final approval.
+failed evidence. Scoped re-review confirmed both findings addressed and no new
+breakage. No review finding remains open.
+
+### Controller final verification and review closure
+
+The controller independently reran verification on executable-source commit
+`a4521323b4195d5e0e3b654cd70f55d257ef25ed`, using the pinned environment above.
+Only documentation status/receipt changes follow this tested source commit.
+
+- `cargo test --workspace --all-features --locked`: PASS, 205 tests/33 groups.
+- `cargo fmt --all -- --check` and strict workspace clippy: PASS.
+- Both artifact builders: PASS, all six recorded artifact hashes unchanged.
+- Shell regression, required shell syntax checks and `git diff --check`: PASS.
+- `go test -tags upstream -count=1 ./...`: PASS, 29.567s.
+- The documented focused race command, including actual restart and
+  journal/RPC/cleanup tests: PASS, 13.042s.
+- `bash scripts/native-dca-demo.sh all`: PASS, 22.755s, all five scenarios.
+
+Logs are retained in `/private/tmp/native-dca-final.IVbzgG` as
+`final-rust-test.log`, `final-rust-clippy.log`, `final-go-test.log`,
+`final-race.log`, `final-demo-all.log`, `fulfill-build.log`, and `dca-build.log`.
+The final script receipts are `happy-3421767307`, `funding-2210788351`,
+`liquidity-3827600275`, `cancel-4038303399`, and `restart-1983624451` under that
+directory; all report `passed=true` and `owned_child_exited=true`. The separate
+race restart receipt is `restart-3084312806`.
+
+Review scope exclusions remain explicit below: no general runtime safety,
+production financial safety, Linux execution, DCA state-sync/Quint proof, or
+free-running performance claim. The original dirty checkout is preserved;
+no push, pull request, merge or deployment was performed.
 
 The journal's compilable stubs first produced eight semantic RED failures;
 implementation and race checks then passed. Coverage includes lost response,

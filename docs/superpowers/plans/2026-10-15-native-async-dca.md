@@ -43,7 +43,7 @@ Dependency order: Task 1 → Tasks 2 and 3 independently → Task 4 → Task 5 �
 - [x] Record current PR heads, `git status --short`, Rust/Go/tool versions, and a fresh isolated `CARGO_TARGET_DIR` created with `mktemp -d`.
 - [x] Run `cargo test --workspace --all-features --locked`, `cargo fmt --all -- --check`, and `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` before product edits. Record baseline failures separately; do not weaken tests to conceal them.
 
-Status updated 2026-10-15: Tasks 1–6 are implemented, committed and independently reviewed; Task 7 implementation/scenarios and final verification are recorded in the [verification receipt](../../reviews/2026-10-15-native-dca-verification.md). The final whole-change review remains pending with the controller, so its combined review/commit checkbox below stays open. Checkboxes record observed implementation evidence, not a production-readiness or proof claim.
+Status updated 2026-10-15: All seven tasks are implemented, committed and independently reviewed. Whole-change review and scoped re-review are complete with no open findings; fresh controller verification is recorded in the [verification receipt](../../reviews/2026-10-15-native-dca-verification.md). Checkboxes record observed local-example evidence, not a production-readiness or proof claim. No remote publication was performed.
 
 ## File map
 
@@ -256,7 +256,7 @@ require.True(t, unrelatedProcessStillAlive)
 - [x] Document first-run prerequisites/downloads, every command, illustrative output labeled as such, how to inspect task IDs/funding, exact min-interval semantics, immutable terms, unrecoverable timeouts, explicit principal reclaim and known runtime limits. Keep demo commands reproducible from repository root and explain stock wasmd is insufficient.
 - [x] Run `bash -n scripts/native-dca-demo.sh scripts/wasmd-normalize.sh contracts/native-dca/build-wasmd.sh`, journal tests, each scenario independently, and `scripts/native-dca-demo.sh all`. Verify child exit and retain small logs/receipts without retaining unnecessary build directories.
 - [x] Run final `cargo test --workspace --all-features --locked`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`, both artifact builders, full pinned Go suite, and `git diff --check`.
-- [ ] Independently review the full change, fix scoped findings with regression tests, then write the verification receipt with exact source/artifact identities, commands, results and untested boundaries. Do not claim state sync, Quint proof or runtime defects fixed. Commit as `docs: ship runnable native DCA scenarios and verification`.
+- [x] Independently review the full change, fix scoped findings with regression tests, then write the verification receipt with exact source/artifact identities, commands, results and untested boundaries. Do not claim state sync, Quint proof or runtime defects fixed. Commit as `docs: ship runnable native DCA scenarios and verification`.
 
 ## Acceptance and handoff
 

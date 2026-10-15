@@ -2,10 +2,10 @@
 
 Date: 2026-10-15
 
-Status updated 2026-10-15: design and implementation plan approved; Tasks 1–6
-implemented, committed and independently reviewed. Task 7 runner, tutorial and
-verification are implemented; final whole-change review remains pending with
-the controller. See the [verification receipt](../../reviews/2026-10-15-native-dca-verification.md)
+Status updated 2026-10-15: design and implementation plan approved; all seven
+tasks implemented, committed and independently reviewed. Whole-change review,
+scoped fixes/re-review and fresh controller verification are complete with no
+open findings. See the [verification receipt](../../reviews/2026-10-15-native-dca-verification.md)
 for exact sources, artifacts, commands and evidence boundaries.
 
 ## Purpose and scope
