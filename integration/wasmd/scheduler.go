@@ -406,7 +406,7 @@ func (k *Keeper) stage(ctx sdk.Context, t *Task, r PollResponse) error {
 			w := p.Wait.Operation
 			due = w.Deadline
 			reserve = uint64(w.MaxResultBytes)
-			if _, e := sdk.AccAddressFromBech32(w.Resolver); e != nil {
+			if _, e := validateResolver(w.Resolver); e != nil {
 				return e
 			}
 		}

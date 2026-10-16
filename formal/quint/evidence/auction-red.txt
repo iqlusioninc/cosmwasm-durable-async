@@ -1,0 +1,139 @@
+Test-first stub run: exit 1; 14 assertion failures (no parser/backend error).
+
+  native_batch_auction_tests
+    1) underfullReserveTest failed after 1 test(s)
+    2) exactDemandReserveTest failed after 1 test(s)
+    3) marginalDustCommitOrderTest failed after 1 test(s)
+    4) standardBookDustOutsideFiniteProfileTest failed after 1 test(s)
+    5) unrevealedRefundTest failed after 1 test(s)
+    6) frozenBookTest failed after 1 test(s)
+    7) boundedItemsAndOnePollPerHeightTest failed after 1 test(s)
+    8) lockedAndRepeatedClaimsTest failed after 1 test(s)
+    9) twoCoinClaimFailureTest failed after 1 test(s)
+    10) partialWriteRollbackTest failed after 1 test(s)
+    11) finalizeBoundaryTest failed after 1 test(s)
+    12) abortEveryPhaseAndFinalizedNeverAbortsTest failed after 1 test(s)
+    13) hostPrunedClaimsTest failed after 1 test(s)
+    14) restartSuccessorsAndClaimFlagsTest failed after 1 test(s)
+
+  14 failed
+
+  1) underfullReserveTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:14:5
+        14:     assert(f.book.phase == "Finalized" and f.book.price == 1 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        15:       f.book.bids.get(1).sale == 2 and f.book.bids.get(1).refund == 10 and f.book.proceeds == 2)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=underfullReserveTest to repeat.
+  2) exactDemandReserveTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:20:5
+        20:     assert(f.book.phase == "Finalized" and f.book.price == 1 and f.book.proceeds == 2)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=exactDemandReserveTest to repeat.
+  3) marginalDustCommitOrderTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:24:5
+        24:     assert(f.book.phase == "Finalized" and f.book.price == 2 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        25:       f.book.bids.get(1).allocation == 2 and f.book.bids.get(2).allocation == 1 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        26:       f.book.bids.get(3).allocation == 0 and f.book.residual == 0 and f.book.proceeds == 6)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=marginalDustCommitOrderTest to repeat.
+  4) standardBookDustOutsideFiniteProfileTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:33:5
+        33:     assert(f.book.phase == "Finalized" and f.book.bids.get(1).allocation == 2 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        34:       f.book.bids.get(2).allocation == 2 and f.book.bids.get(3).allocation == 1)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=standardBookDustOutsideFiniteProfileTest to repeat.
+  5) unrevealedRefundTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:39:5
+        39:     assert(f.book.bids.get(1).refund == 12 and f.book.bids.get(1).sale == 0 and paid.quotePaid.get(1) == 12)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=unrevealedRefundTest to repeat.
+  6) frozenBookTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:43:5
+        43:     assert(commit(s, 1, 1) == s and reveal(s, 3, 1, 2, 3) == s and s.book.order.length() == 3)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=frozenBookTest to repeat.
+  7) boundedItemsAndOnePollPerHeightTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:47:5
+        47:     assert(p.polls == 1 and p.visits <= 1 and poll(p, false, false, false) == p)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=boundedItemsAndOnePollPerHeightTest to repeat.
+  8) lockedAndRepeatedClaimsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:53:5
+        53:     assert(claim(s, 1, false, false, false) == s and paid.book.bids.get(1).claimed and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        54:       paid.salePaid.get(3) == 2 and paid.quotePaid.get(1) == 8 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        55:       claim(paid, 1, false, false, false) == paid)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=lockedAndRepeatedClaimsTest to repeat.
+  9) twoCoinClaimFailureTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:59:5
+        59:     assert(claim(f, 1, true, false, false) == f and not(f.book.bids.get(1).claimed) and f.book.bids.get(1).sale == 2)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=twoCoinClaimFailureTest to repeat.
+  10) partialWriteRollbackTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:64:5
+        64:     assert(failed.book == s.book and failed.gas == s.gas - 1 and failed.fees == s.fees + 1 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        65:       failed.paused and failed.rolledBack and failed.rollbackSafe)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=partialWriteRollbackTest to repeat.
+  11) finalizeBoundaryTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:70:5
+        70:     assert(p.book.phase == "Finalize" and poll(at(p, E - 1), false, false, false).book.phase == "Finalized" and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        71:       poll(at(p, E), false, false, false).book.phase == "Finalize")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=finalizeBoundaryTest to repeat.
+  12) abortEveryPhaseAndFinalizedNeverAbortsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:76:5
+        76:     assert(Set("Open", "ScanPrice", "AllocateBase", "BuildClaims", "Finalize").forall(phase => {
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        77:       val p = s.with("book", s.book.with("phase", phase))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        78:       val a = abort(at(p, E))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        79:       a.book.phase == "Aborted" and claim(a, 1, false, false, false).quotePaid.get(1) == 12 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        80:         claim(a, 0, false, false, false).salePaid.get(0) == 3 and poll(a, false, false, false) == a
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        81:     }) and abort(at(f, 21)).book.phase == "Finalized")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=abortEveryPhaseAndFinalizedNeverAbortsTest to repeat.
+  13) hostPrunedClaimsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:85:5
+        85:     assert(claim(f, 1, false, false, false).salePaid.get(3) == 2 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        86:       claim(at(book(3, 1), E).with("hostPresent", false), 1, false, false, false).quotePaid.get(1) == 12)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=hostPrunedClaimsTest to repeat.
+  14) restartSuccessorsAndClaimFlagsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:93:5
+        93:     assert(r.restarted and poll(r, false, false, false).book == poll(p, false, false, false).book and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        94:       restored.book == f.book and claim(restored, 1, false, false, false) == restored)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=restartSuccessorsAndClaimFlagsTest to repeat.
+
+error: Tests failed
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_batch_auction_tests.qnt

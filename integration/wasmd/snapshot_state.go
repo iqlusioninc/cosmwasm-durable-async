@@ -206,7 +206,7 @@ func (k *Keeper) ValidateState(ctx sdk.Context) error {
 				due = t.Wait.Height.Height
 			} else {
 				due = t.Wait.Operation.Deadline
-				if _, err := sdk.AccAddressFromBech32(t.Wait.Operation.Resolver); err != nil {
+				if _, err := validateResolver(t.Wait.Operation.Resolver); err != nil {
 					return err
 				}
 			}

@@ -5,6 +5,8 @@ use cosmwasm_std::{
 };
 use native_async::{host::Keeper, runtime::*, *};
 
+const TEST_RESOLVER: &str = "cosmwasm1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsc7cyd3";
+
 fn management(value: serde_json::Value) -> RuntimeMsg {
     serde_json::from_value(value).expect("management ABI")
 }
@@ -71,7 +73,7 @@ fn priced_out_task_pauses_only_after_grace() {
     let id = register(&rt, &api, &mut s, &c, &mut host);
     for h in 2..=5 {
         set_base(&mut s, "2");
-        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut s, h, &mut host).unwrap();
         assert_eq!(report.price_pauses, u32::from(h == 5));
         assert_eq!(
             rt.task(&s, &c, id, h).unwrap().status,
@@ -113,7 +115,7 @@ fn full_block_wait_never_price_pauses() {
         state: Binary::default(),
     };
     for h in 2..=12 {
-        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut s, h, &mut host).unwrap();
         assert_eq!(report.price_pauses, 0);
         assert_eq!(report.polls, 1);
         assert!(report.base_price <= "5".parse::<Decimal>().unwrap());
@@ -132,28 +134,37 @@ fn price_pause_survives_price_drop_until_resume_and_keeps_inbox() {
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"saved".as_slice()),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 18,
             max_result_bytes: 20,
         },
     };
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let resolution = Resolution::Success {
         data: Binary::from(b"reply".as_slice()),
     };
-    rt.deliver(&mut s, 3, &c, id, 1, "service", resolution.clone(), false)
-        .unwrap();
+    rt.deliver(
+        &mut s,
+        3,
+        &c,
+        id,
+        1,
+        TEST_RESOLVER,
+        resolution.clone(),
+        false,
+    )
+    .unwrap();
     rt.config.max_visits = 0;
     for h in 3..=6 {
         set_base(&mut s, "2");
-        rt.run_block(&mut s, h, &mut host).unwrap();
+        rt.run_block(&api, &mut s, h, &mut host).unwrap();
     }
     assert_eq!(
         rt.task(&s, &c, id, 6).unwrap().status,
         ExecutionStatus::Paused
     );
     set_base(&mut s, "1");
-    rt.run_block(&mut s, 7, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 7, &mut host).unwrap();
     assert_eq!(
         rt.task(&s, &c, id, 7).unwrap().inbox,
         Some(resolution.clone())
@@ -194,7 +205,7 @@ fn matured_height_timer_keeps_resolution_through_price_pause_and_resume() {
 fn matured_operation_timeout_keeps_resolution_through_price_pause_and_resume() {
     matured_wait_keeps_resolution_through_price_pause_and_resume(
         Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 4,
             max_result_bytes: 20,
         },
@@ -213,7 +224,7 @@ fn matured_wait_keeps_resolution_through_price_pause_and_resume(
         state: state.clone(),
         wait: wait.clone(),
     };
-    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 2, &mut host).unwrap().polls, 1);
     let due_key = s
         .range(
             Some(b"na2/due/"),
@@ -244,7 +255,7 @@ fn matured_wait_keeps_resolution_through_price_pause_and_resume(
     // Delayed promotion must retain the wait's original height and FIFO slot.
     for height in 5..=7 {
         set_base(&mut s, "2");
-        let report = rt.run_block(&mut s, height, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut s, height, &mut host).unwrap();
         assert_eq!(report.promotions, u32::from(height == 5));
         assert_eq!(report.polls, 0);
         assert_eq!(report.price_pauses, u32::from(height == 7));
@@ -305,7 +316,7 @@ fn matured_wait_keeps_resolution_through_price_pause_and_resume(
     host.outcome = PollOutcome::Complete {
         output: Binary::default(),
     };
-    assert_eq!(rt.run_block(&mut s, 8, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 8, &mut host).unwrap().polls, 1);
     let request: PollRequest = cosmwasm_std::from_json(s.get(b"user/request").unwrap()).unwrap();
     assert_eq!(request.step, PollStep::Resume { state, resolution });
     assert_eq!(query(&s, 8).status, TaskStatus::Completed);
@@ -319,7 +330,7 @@ fn lowered_bid_grace_counts_from_last_poll() {
     host.outcome = PollOutcome::Yield {
         state: Binary::from(b"saved".as_slice()),
     };
-    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 2, &mut host).unwrap().polls, 1);
     assert_eq!(poll_log(&s), vec![(c.to_string(), id)]);
     assert_eq!(rt.task(&s, &c, id, 2).unwrap().last_attempt, Some(2));
 
@@ -328,7 +339,12 @@ fn lowered_bid_grace_counts_from_last_poll() {
     rt.config.max_visits = 0;
     for h in 3..=4 {
         set_base(&mut s, "2");
-        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().price_pauses, 0);
+        assert_eq!(
+            rt.run_block(&api, &mut s, h, &mut host)
+                .unwrap()
+                .price_pauses,
+            0
+        );
     }
     let before = rt.task(&s, &c, id, 4).unwrap();
     assert_eq!(before.ready_at, 3);
@@ -339,7 +355,7 @@ fn lowered_bid_grace_counts_from_last_poll() {
     assert_eq!(after.last_attempt, Some(2));
     for h in 5..=6 {
         set_base(&mut s, "2");
-        let report = rt.run_block(&mut s, h, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut s, h, &mut host).unwrap();
         assert_eq!(report.price_pauses, u32::from(h == 6));
     }
     assert_eq!(
@@ -402,7 +418,7 @@ fn price_walk_cap_counts_younger_skipped_entries() {
     let old = register(&rt, &api, &mut s, &c, &mut host);
     set_bid(&rt, &api, &mut s, &c, &mut host, old, 40, "2");
     set_base(&mut s, "4");
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let young = rt
         .register(
             &api,
@@ -427,7 +443,7 @@ fn price_walk_cap_counts_younger_skipped_entries() {
         )
         .unwrap();
     set_base(&mut s, "4");
-    let report = rt.run_block(&mut s, 5, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 5, &mut host).unwrap();
     assert_eq!(report.price_pauses, 0);
     assert_eq!(
         rt.task(&s, &c, old, 5).unwrap().status,
@@ -439,7 +455,12 @@ fn price_walk_cap_counts_younger_skipped_entries() {
     );
     rt.config.max_price_pauses = 2;
     set_base(&mut s, "4");
-    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().price_pauses, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut s, 6, &mut host)
+            .unwrap()
+            .price_pauses,
+        1
+    );
     assert_eq!(
         rt.task(&s, &c, old, 6).unwrap().status,
         ExecutionStatus::Paused
@@ -452,10 +473,10 @@ fn price_walk_obeys_shared_maintenance_gas() {
     rt.config.max_visits = 0;
     let id = register(&rt, &api, &mut s, &c, &mut host);
     set_base(&mut s, "2");
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     rt.config.maintenance_gas = 3;
     set_base(&mut s, "2");
-    let report = rt.run_block(&mut s, 5, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 5, &mut host).unwrap();
     assert_eq!(report.maintenance_gas_used, 3);
     assert_eq!(report.price_pauses, 0);
     assert_eq!(
@@ -464,7 +485,12 @@ fn price_walk_obeys_shared_maintenance_gas() {
     );
     rt.config.maintenance_gas = 4;
     set_base(&mut s, "2");
-    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().price_pauses, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut s, 6, &mut host)
+            .unwrap()
+            .price_pauses,
+        1
+    );
 }
 
 #[test]
@@ -496,15 +522,25 @@ fn expiry_precedes_price_pause_even_when_expiry_maintenance_is_exhausted() {
         )
         .unwrap();
     set_base(&mut s, "2");
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     set_base(&mut s, "2");
-    assert_eq!(rt.run_block(&mut s, 5, &mut host).unwrap().price_pauses, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut s, 5, &mut host)
+            .unwrap()
+            .price_pauses,
+        0
+    );
     assert_eq!(
         rt.task(&s, &c, id, 5).unwrap().status,
         ExecutionStatus::Expired
     );
     rt.config.max_expirations = 1;
-    assert_eq!(rt.run_block(&mut s, 6, &mut host).unwrap().expirations, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut s, 6, &mut host)
+            .unwrap()
+            .expirations,
+        1
+    );
 }
 
 #[test]
@@ -514,7 +550,7 @@ fn resume_requires_bid_at_or_above_base_price() {
     let id = register(&rt, &api, &mut s, &c, &mut host);
     for h in 2..=5 {
         set_base(&mut s, "2");
-        rt.run_block(&mut s, h, &mut host).unwrap();
+        rt.run_block(&api, &mut s, h, &mut host).unwrap();
     }
     assert!(rt
         .manage(
@@ -558,7 +594,7 @@ fn highest_bid_polls_first_and_equal_bids_are_fifo() {
         set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, bid);
     }
     for h in 2..=4 {
-        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().polls, 1);
+        assert_eq!(rt.run_block(&api, &mut s, h, &mut host).unwrap().polls, 1);
     }
     assert_eq!(
         poll_log(&s),
@@ -577,7 +613,7 @@ fn stops_at_first_bid_below_base_price() {
         b"na2/base-price",
         &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
     );
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(poll_log(&s), vec![(c.to_string(), 2)]);
     assert!(report.visits <= 2);
     assert_eq!(
@@ -604,7 +640,7 @@ fn bid_equal_to_base_price_is_eligible() {
         b"na2/base-price",
         &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
     );
-    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 2, &mut host).unwrap().polls, 1);
 }
 
 #[test]
@@ -617,7 +653,7 @@ fn all_priced_out_polls_nothing_and_decays() {
         b"na2/base-price",
         &cosmwasm_std::to_json_vec(&Decimal::percent(400)).unwrap(),
     );
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.polls, 0);
     assert_eq!(report.visits, 1);
     assert!(report.next_base_price < report.base_price);
@@ -636,11 +672,11 @@ fn oversized_task_is_skipped_then_first_next_block() {
         let id = register(&rt, &api, &mut s, &c, &mut host);
         set_bid(&rt, &api, &mut s, &c, &mut host, id, gas, bid);
     }
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.polls, 2);
     assert_eq!(report.visits, 3);
     assert_eq!(poll_log(&s), vec![(c.to_string(), 1), (c.to_string(), 3)]);
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 1);
     assert_eq!(poll_log(&s).last(), Some(&(c.to_string(), 2)));
 }
 
@@ -654,7 +690,7 @@ fn selection_visit_cap_is_global_across_oversized_entries() {
         let id = register(&rt, &api, &mut s, &c, &mut host);
         set_bid(&rt, &api, &mut s, &c, &mut host, id, gas, bid);
     }
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.visits, 3);
     assert_eq!(report.polls, 1);
     assert_eq!(
@@ -671,13 +707,13 @@ fn update_budget_rekeys_bid_entry_preserving_fifo() {
         set_bid(&rt, &api, &mut s, &c, &mut host, id, 40, bid);
     }
     rt.config.max_visits = 0;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     // Raising the oldest task to an equal bid must retain its FIFO position.
     set_bid(&rt, &api, &mut s, &c, &mut host, 1, 40, "5");
     set_bid(&rt, &api, &mut s, &c, &mut host, 3, 40, "6");
     rt.config.max_visits = 1;
     for h in 3..=5 {
-        assert_eq!(rt.run_block(&mut s, h, &mut host).unwrap().polls, 1);
+        assert_eq!(rt.run_block(&api, &mut s, h, &mut host).unwrap().polls, 1);
     }
     assert_eq!(
         poll_log(&s),
@@ -693,8 +729,8 @@ fn delayed_promotion_preserves_original_readiness_height() {
     }
     rt.config.max_promotions = 1;
     rt.config.max_visits = 0;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
-    rt.run_block(&mut s, 5, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 5, &mut host).unwrap();
     for id in 1..=2 {
         let task = serde_json::to_value(rt.task(&s, &c, id, 5).unwrap()).unwrap();
         assert_eq!(task["ready_at"], 2);
@@ -716,19 +752,19 @@ fn delayed_promotion_keeps_fifo_before_equal_height_delivery() {
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"wait".as_slice()),
         wait: Wait::Operation {
-            resolver: "resolver".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 10,
             max_result_bytes: 10,
         },
     };
-    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 2, &mut host).unwrap().polls, 1);
     rt.deliver(
         &mut s,
         2,
         &c,
         waiting,
         1,
-        "resolver",
+        TEST_RESOLVER,
         Resolution::Success {
             data: Binary::default(),
         },
@@ -738,7 +774,7 @@ fn delayed_promotion_keeps_fifo_before_equal_height_delivery() {
     host.outcome = PollOutcome::Complete {
         output: Binary::default(),
     };
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 1);
     assert_eq!(
         poll_log(&s),
         vec![(c.to_string(), waiting), (c.to_string(), delayed)]
@@ -752,7 +788,7 @@ fn base_price_rises_on_full_blocks_and_decays_to_floor() {
         register(&rt, &api, &mut s, &c, &mut host);
     }
     host.gas = 35;
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.polls, 3);
     assert_eq!(report.base_price, Decimal::one());
     assert_eq!(report.poll_gas_used, 105);
@@ -762,7 +798,7 @@ fn base_price_rises_on_full_blocks_and_decays_to_floor() {
     );
     assert!(report.next_base_price > report.base_price);
     assert_eq!(rt.base_price(&s).unwrap(), report.next_base_price);
-    let idle = rt.run_block(&mut s, 3, &mut host).unwrap();
+    let idle = rt.run_block(&api, &mut s, 3, &mut host).unwrap();
     assert_eq!(idle.base_price, report.next_base_price);
     assert_eq!(idle.poll_gas_used, 0);
     assert_eq!(idle.next_base_price, Decimal::one());
@@ -791,7 +827,7 @@ fn polls_are_charged_at_block_base_price() {
         b"na2/base-price",
         &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
     );
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.polls, 1);
     assert_eq!(report.base_price, Decimal::percent(200));
     assert_eq!(report.gas_used, 9);
@@ -894,12 +930,12 @@ fn reservation_overflow_after_price_increase_pauses_without_charge() {
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"saved".as_slice()),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 10,
             max_result_bytes: 20,
         },
     };
-    let full = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let full = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(full.polls, 1);
     assert_eq!(full.poll_gas_used, 1_999_999_999_930_000_000);
     assert_eq!(
@@ -912,7 +948,7 @@ fn reservation_overflow_after_price_increase_pauses_without_charge() {
         &c,
         id,
         1,
-        "service",
+        TEST_RESOLVER,
         Resolution::Success {
             data: Binary::from(b"yes".as_slice()),
         },
@@ -961,7 +997,7 @@ fn reservation_overflow_after_price_increase_pauses_without_charge() {
             .collect::<Vec<_>>()
     );
     host.gas = 7;
-    let report = rt.run_block(&mut s, 3, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 3, &mut host).unwrap();
     assert_eq!(
         report.polls, 1,
         "another affordable task continues in the same block"
@@ -1040,9 +1076,9 @@ fn funding_config_reports_live_price() {
     assert_eq!(config.target_gas, 60);
     assert_eq!(config.price_grace_blocks, 3);
     assert_eq!(config.last_block_poll_gas_used, 17);
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.next_base_price, Decimal::percent(175));
-    let replay = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let replay = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(replay.polls, 0);
     assert_eq!(rt.base_price(&s).unwrap(), Decimal::percent(175));
 }
@@ -1050,10 +1086,10 @@ fn funding_config_reports_live_price() {
 #[test]
 fn runtime_rejects_zero_price_target_and_denominator_without_writes() {
     for (block_gas, denominator) in [(1, 8), (120, 0)] {
-        let (mut rt, _, mut s, _, mut host) = setup();
+        let (mut rt, api, mut s, _, mut host) = setup();
         rt.config.block_gas = block_gas;
         rt.config.price_adjust_denominator = denominator;
-        assert!(rt.run_block(&mut s, 2, &mut host).is_err());
+        assert!(rt.run_block(&api, &mut s, 2, &mut host).is_err());
         assert!(s.get(b"na2/base-price").is_none());
         assert!(s.get(b"na2/last-block").is_none());
     }
@@ -1118,7 +1154,7 @@ fn resume_checks_current_base_price() {
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
     host.gas = 45;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     s.set(
         b"na2/base-price",
         &cosmwasm_std::to_json_vec(&Decimal::percent(200)).unwrap(),
@@ -1143,7 +1179,7 @@ fn overreported_poll_gas_is_capped_before_price_utilization() {
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
     host.gas = u64::MAX;
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.gas_used, 40);
     assert_eq!(report.poll_gas_used, 38);
     assert_eq!(rt.task(&s, &c, id, 2).unwrap().charged, Uint128::new(40));
@@ -1155,7 +1191,7 @@ fn zero_floor_runtime_registers_and_charges_zero() {
     let (mut rt, api, mut s, c, mut host) = setup();
     rt.keeper.config.gas_price = Decimal::zero();
     let id = register(&rt, &api, &mut s, &c, &mut host);
-    let report = rt.run_block(&mut s, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(report.polls, 1);
     assert_eq!(report.base_price, Decimal::zero());
     assert_eq!(report.next_base_price, Decimal::zero());
@@ -1236,7 +1272,7 @@ fn zero_floor_runtime_resumes_task() {
     let (mut rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
     host.gas = 45;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     rt.keeper.config.gas_price = Decimal::zero();
     s.set(
         b"na2/base-price",
@@ -1375,14 +1411,14 @@ fn public_task_query_projects_lifecycle_without_internal_fields() {
         state: Binary::from(b"continuation"),
         wait: Wait::Height { height: 4 },
     };
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(query(&s, 2)["status"], "waiting");
     assert_eq!(query(&s, 2)["last_attempt"], 2);
     assert_eq!(query(&s, 20)["status"], "expired");
     host.outcome = PollOutcome::Complete {
         output: Binary::from(b"done"),
     };
-    rt.run_block(&mut s, 4, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 4, &mut host).unwrap();
     let completed = query(&s, 4);
     assert_eq!(completed["status"], "completed");
     assert_eq!(completed["output"], "ZG9uZQ==");
@@ -1401,7 +1437,7 @@ fn public_task_query_preserves_typed_pause_and_failed_output_separation() {
         } else {
             host.gas = 45;
         }
-        rt.run_block(&mut s, 2, &mut host).unwrap();
+        rt.run_block(&api, &mut s, 2, &mut host).unwrap();
         let response: TaskResponse = cosmwasm_std::from_json(
             rt.query(
                 &api,
@@ -1434,17 +1470,16 @@ fn public_task_query_preserves_typed_pause_and_failed_output_separation() {
 }
 fn funding(rt: &Runtime, api: &MockApi, s: &dyn Storage, c: &Addr, id: u64) -> TaskFunding {
     cosmwasm_std::from_json(
-        rt.keeper
-            .query(
-                api,
-                s,
-                3,
-                SchedulerQuery::TaskFunding {
-                    contract: c.to_string(),
-                    task_id: id,
-                },
-            )
-            .unwrap(),
+        rt.query(
+            api,
+            s,
+            3,
+            RuntimeQuery::Funding(SchedulerQuery::TaskFunding {
+                contract: c.to_string(),
+                task_id: id,
+            }),
+        )
+        .unwrap(),
     )
     .unwrap()
 }
@@ -1457,12 +1492,12 @@ fn extend_lease_charges_exact_incremental_rent_and_preserves_wait() {
         host.outcome = PollOutcome::Pending {
             state: Binary::default(),
             wait: Wait::Operation {
-                resolver: "service".into(),
+                resolver: TEST_RESOLVER.into(),
                 deadline: 5,
                 max_result_bytes: 10,
             },
         };
-        rt.run_block(&mut s, 2, &mut host).unwrap();
+        rt.run_block(&api, &mut s, 2, &mut host).unwrap();
         rt.manage(
             &api,
             &mut s,
@@ -1510,7 +1545,7 @@ fn budget_update_keeps_pause_until_explicit_retry_and_changes_refund() {
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
     host.gas = 45;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let refund = api.addr_make("new-refund");
     rt.execute(
         &api,
@@ -1527,7 +1562,7 @@ fn budget_update_keeps_pause_until_explicit_retry_and_changes_refund() {
     let f = funding(&rt, &api, &s, &c, id);
     assert_eq!(f.max_attempt_charge, Uint128::new(60));
     assert_eq!(f.refund, refund.as_str());
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 0);
     rt.manage(
         &api,
         &mut s,
@@ -1540,7 +1575,7 @@ fn budget_update_keeps_pause_until_explicit_retry_and_changes_refund() {
         &mut host,
     )
     .unwrap();
-    assert_eq!(rt.run_block(&mut s, 4, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 4, &mut host).unwrap().polls, 1);
     assert_eq!(
         rt.task(&s, &c, id, 4).unwrap().status,
         ExecutionStatus::Completed
@@ -1638,7 +1673,7 @@ fn extended_expiry_index_and_retention_survive_restart() {
         state: Binary::default(),
         wait: Wait::Height { height: 19 },
     };
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     rt.execute(
         &api,
         &mut s,
@@ -1667,20 +1702,32 @@ fn extended_expiry_index_and_retention_survive_restart() {
     restored.config.block_gas = 2; // Positive price target, without invoking guest.
     assert_eq!(
         restored
-            .run_block(&mut s, 20, &mut host)
+            .run_block(&api, &mut s, 20, &mut host)
             .unwrap()
             .expirations,
         0
     );
     assert_eq!(
         restored
-            .run_block(&mut s, 25, &mut host)
+            .run_block(&api, &mut s, 25, &mut host)
             .unwrap()
             .expirations,
         1
     );
-    assert_eq!(restored.run_block(&mut s, 26, &mut host).unwrap().prunes, 0);
-    assert_eq!(restored.run_block(&mut s, 27, &mut host).unwrap().prunes, 1);
+    assert_eq!(
+        restored
+            .run_block(&api, &mut s, 26, &mut host)
+            .unwrap()
+            .prunes,
+        0
+    );
+    assert_eq!(
+        restored
+            .run_block(&api, &mut s, 27, &mut host)
+            .unwrap()
+            .prunes,
+        1
+    );
     assert!(restored.task(&s, &c, id, 27).is_err());
 }
 
@@ -1689,7 +1736,7 @@ fn budget_noop_is_accepted_price_limit_blocks_resume_and_cancel_uses_new_refund(
     let (rt, api, mut s, c, mut host) = setup();
     let id = register(&rt, &api, &mut s, &c, &mut host);
     host.fail = true;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let refund = api.addr_make("new-refund");
     let msg = management(serde_json::json!({"update_budget":{
         "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"0.5","refund":refund,
@@ -1742,7 +1789,7 @@ fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
         .unwrap();
     // Admission funded the original cap exactly; increasing the cap can
     // still cause an insufficient-funds pause when the scheduler visits it.
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 0);
     let before = funding(&rt, &api, &s, &c, id);
     assert_eq!(before.available, Uint128::new(40));
     assert_eq!(before.storage_lease_paid, Uint128::new(960));
@@ -1773,7 +1820,7 @@ fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
         &mut host,
     )
     .unwrap();
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 0);
     rt.manage(
         &api,
         &mut s,
@@ -1786,7 +1833,7 @@ fn budget_can_exceed_balance_but_resume_requires_explicit_topup() {
         &mut host,
     )
     .unwrap();
-    assert_eq!(rt.run_block(&mut s, 4, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 4, &mut host).unwrap().polls, 1);
 }
 
 #[test]
@@ -1796,25 +1843,25 @@ fn budget_update_does_not_bypass_an_operation_wait_or_discard_accepted_inbox() {
     host.outcome = PollOutcome::Pending {
         state: Binary::default(),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 10,
             max_result_bytes: 20,
         },
     };
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let budget = management(serde_json::json!({"update_budget":{
         "task_id":id,"actor":c,"gas_per_poll":60,"max_gas_price":"1","refund":c,
     }}));
     rt.execute(&api, &mut s, 3, &c, budget.clone(), false, &mut host)
         .unwrap();
-    assert_eq!(rt.run_block(&mut s, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(rt.run_block(&api, &mut s, 3, &mut host).unwrap().polls, 0);
     rt.deliver(
         &mut s,
         4,
         &c,
         id,
         1,
-        "service",
+        TEST_RESOLVER,
         Resolution::Success {
             data: Binary::from(b"yes".as_slice()),
         },
@@ -1835,6 +1882,7 @@ struct TestHost {
     fail: bool,
     dispatch_fail: bool,
     gas: u64,
+    transfers: u32,
 }
 impl PollHost for TestHost {
     fn code_checksum(&self, _: &str) -> StdResult<Binary> {
@@ -1895,6 +1943,7 @@ impl PollHost for TestHost {
         to: &Addr,
         coin: &Coin,
     ) -> StdResult<()> {
+        self.transfers += 1;
         if store.get(format!("bank/blocked/{to}").as_bytes()).is_some() {
             return Err(cosmwasm_std::StdError::generic_err("send restricted"));
         }
@@ -1968,6 +2017,7 @@ fn setup() -> (Runtime, MockApi, MockStorage, Addr, TestHost) {
         fail: false,
         dispatch_fail: false,
         gas: 7,
+        transfers: 0,
     };
     (runtime, api, storage, contract, host)
 }
@@ -2005,8 +2055,14 @@ fn register(
 fn registration_waits_until_next_block_and_completion_refunds() {
     let (rt, api, mut store, c, mut host) = setup();
     let id = register(&rt, &api, &mut store, &c, &mut host);
-    assert_eq!(rt.run_block(&mut store, 1, &mut host).unwrap().polls, 0);
-    assert_eq!(rt.run_block(&mut store, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 1, &mut host).unwrap().polls,
+        0
+    );
+    assert_eq!(
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap().polls,
+        1
+    );
     assert_eq!(
         rt.task(&store, &c, id, 2).unwrap().status,
         ExecutionStatus::Completed
@@ -2034,10 +2090,13 @@ fn trap_rolls_back_user_storage_but_charges_and_requires_retry() {
     let (rt, api, mut store, c, mut host) = setup();
     let id = register(&rt, &api, &mut store, &c, &mut host);
     host.fail = true;
-    rt.run_block(&mut store, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     assert!(store.get(b"user/write").is_none());
     assert_eq!(rt.task(&store, &c, id, 2).unwrap().charged, Uint128::new(9));
-    assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 3, &mut host).unwrap().polls,
+        0
+    );
 }
 
 #[test]
@@ -2047,22 +2106,22 @@ fn accepted_result_survives_deadline_and_restart_and_rejects_duplicates() {
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"saved".as_slice()),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 5,
             max_result_bytes: 30,
         },
     };
-    rt.run_block(&mut store, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     let good = Resolution::Success {
         data: Binary::from(b"yes".as_slice()),
     };
     assert!(rt
         .deliver(&mut store, 3, &c, id, 1, "evil", good.clone(), false)
         .is_err());
-    rt.deliver(&mut store, 4, &c, id, 1, "service", good.clone(), false)
+    rt.deliver(&mut store, 4, &c, id, 1, TEST_RESOLVER, good.clone(), false)
         .unwrap();
     assert!(rt
-        .deliver(&mut store, 4, &c, id, 1, "service", good.clone(), false)
+        .deliver(&mut store, 4, &c, id, 1, TEST_RESOLVER, good.clone(), false)
         .is_err());
     assert_eq!(rt.task(&store, &c, id, 5).unwrap().inbox, Some(good));
     host.outcome = PollOutcome::Complete {
@@ -2073,7 +2132,10 @@ fn accepted_result_survives_deadline_and_restart_and_rejects_duplicates() {
         config: rt.config,
     };
     assert_eq!(
-        restored.run_block(&mut store, 6, &mut host).unwrap().polls,
+        restored
+            .run_block(&api, &mut store, 6, &mut host)
+            .unwrap()
+            .polls,
         1
     );
     assert_eq!(
@@ -2089,12 +2151,12 @@ fn exact_deadline_and_expiry_hold_even_when_maintenance_is_disabled() {
     host.outcome = PollOutcome::Pending {
         state: Binary::default(),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 5,
             max_result_bytes: 30,
         },
     };
-    rt.run_block(&mut store, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     rt.config.max_promotions = 0;
     rt.config.max_expirations = 0;
     assert!(rt
@@ -2104,14 +2166,17 @@ fn exact_deadline_and_expiry_hold_even_when_maintenance_is_disabled() {
             &c,
             id,
             1,
-            "service",
+            TEST_RESOLVER,
             Resolution::Success {
                 data: Binary::default()
             },
             false
         )
         .is_err());
-    assert_eq!(rt.run_block(&mut store, 20, &mut host).unwrap().polls, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 20, &mut host).unwrap().polls,
+        0
+    );
     assert_eq!(
         rt.task(&store, &c, id, 20).unwrap().status,
         ExecutionStatus::Expired
@@ -2150,7 +2215,7 @@ fn cancellation_releases_migration_guard_and_prunes_without_reusing_ids() {
     )
     .unwrap();
     rt.assert_migration_allowed(&store, &c).unwrap();
-    rt.run_block(&mut store, 22, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 22, &mut host).unwrap();
     assert!(rt.task(&store, &c, id, 22).is_err());
     let second = register(&rt, &api, &mut store, &c, &mut host);
     assert_eq!(second, 2);
@@ -2163,7 +2228,7 @@ fn oversized_state_rolls_back_and_pauses_and_sponsor_does_not_retry() {
     host.outcome = PollOutcome::Yield {
         state: Binary::from(vec![1; 4097]),
     };
-    rt.run_block(&mut store, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     assert!(store.get(b"user/write").is_none());
     rt.manage(
         &api,
@@ -2178,7 +2243,10 @@ fn oversized_state_rolls_back_and_pauses_and_sponsor_does_not_retry() {
         &mut host,
     )
     .unwrap();
-    assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 3, &mut host).unwrap().polls,
+        0
+    );
     host.outcome = PollOutcome::Complete {
         output: Binary::default(),
     };
@@ -2194,7 +2262,10 @@ fn oversized_state_rolls_back_and_pauses_and_sponsor_does_not_retry() {
         &mut host,
     )
     .unwrap();
-    assert_eq!(rt.run_block(&mut store, 5, &mut host).unwrap().polls, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 5, &mut host).unwrap().polls,
+        1
+    );
 }
 
 #[test]
@@ -2204,7 +2275,7 @@ fn failed_message_and_out_of_gas_revert_user_state_and_bound_fees() {
         let id = register(&rt, &api, &mut store, &c, &mut host);
         host.dispatch_fail = !out_of_gas;
         host.gas = if out_of_gas { u64::MAX } else { 7 };
-        let report = rt.run_block(&mut store, 2, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut store, 2, &mut host).unwrap();
         assert_eq!(report.gas_used, if out_of_gas { 40 } else { 9 });
         assert!(store.get(b"user/write").is_none());
         assert_eq!(
@@ -2231,15 +2302,24 @@ fn equal_bid_contracts_share_global_fifo_and_deferred_entries_survive_restart() 
     register(&rt, &api, &mut store, &c, &mut host);
     register(&rt, &api, &mut store, &other, &mut host);
     host.gas = 28;
-    assert_eq!(rt.run_block(&mut store, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap().polls,
+        1
+    );
     let (mut restored, _, _, _, _) = setup();
     restored.config.block_gas = 60;
     assert_eq!(
-        restored.run_block(&mut store, 3, &mut host).unwrap().polls,
+        restored
+            .run_block(&api, &mut store, 3, &mut host)
+            .unwrap()
+            .polls,
         1
     );
     assert_eq!(
-        restored.run_block(&mut store, 4, &mut host).unwrap().polls,
+        restored
+            .run_block(&api, &mut store, 4, &mut host)
+            .unwrap()
+            .polls,
         1
     );
     let log: Vec<(String, u64)> = cosmwasm_std::from_json(store.get(b"user/log").unwrap()).unwrap();
@@ -2265,18 +2345,27 @@ fn yielding_once_per_block_and_timer_resume_resolution() {
     host.outcome = PollOutcome::Yield {
         state: Binary::from(b"yield".as_slice()),
     };
-    assert_eq!(rt.run_block(&mut store, 2, &mut host).unwrap().polls, 1);
-    assert_eq!(rt.run_block(&mut store, 2, &mut host).unwrap().polls, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap().polls,
+        1
+    );
+    assert_eq!(
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap().polls,
+        0
+    );
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"timer".as_slice()),
         wait: Wait::Height { height: 6 },
     };
-    rt.run_block(&mut store, 3, &mut host).unwrap();
-    assert_eq!(rt.run_block(&mut store, 5, &mut host).unwrap().polls, 0);
+    rt.run_block(&api, &mut store, 3, &mut host).unwrap();
+    assert_eq!(
+        rt.run_block(&api, &mut store, 5, &mut host).unwrap().polls,
+        0
+    );
     host.outcome = PollOutcome::Complete {
         output: Binary::default(),
     };
-    rt.run_block(&mut store, 6, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 6, &mut host).unwrap();
     let request: PollRequest =
         cosmwasm_std::from_json(store.get(b"user/request").unwrap()).unwrap();
     assert_eq!(
@@ -2356,7 +2445,7 @@ impl PollHost for CallbackHost<'_> {
                     &self.contract,
                     self.task_id,
                     1,
-                    "service",
+                    TEST_RESOLVER,
                     Resolution::Success {
                         data: Binary::from(b"immediate".as_slice()),
                     },
@@ -2372,40 +2461,63 @@ impl PollHost for CallbackHost<'_> {
 }
 #[test]
 fn immediate_callback_observes_staged_wait_but_only_runs_next_block() {
-    let (rt, api, mut store, c, mut host) = setup();
-    let id = register(&rt, &api, &mut store, &c, &mut host);
-    host.outcome = PollOutcome::Pending {
-        state: Binary::from(b"saved".as_slice()),
-        wait: Wait::Operation {
-            resolver: "service".into(),
-            deadline: 10,
-            max_result_bytes: 20,
-        },
-    };
-    let mut callback = CallbackHost {
-        inner: host,
-        runtime: &rt,
-        contract: c.clone(),
-        task_id: id,
-    };
-    assert_eq!(rt.run_block(&mut store, 2, &mut callback).unwrap().polls, 1);
-    assert!(rt.task(&store, &c, id, 2).unwrap().inbox.is_some());
-    assert_eq!(rt.run_block(&mut store, 2, &mut callback).unwrap().polls, 0);
-    callback.inner.outcome = PollOutcome::Complete {
-        output: Binary::default(),
-    };
-    assert_eq!(rt.run_block(&mut store, 3, &mut callback).unwrap().polls, 1);
-    let request: PollRequest =
-        cosmwasm_std::from_json(store.get(b"user/request").unwrap()).unwrap();
-    assert_eq!(
-        request.step,
-        PollStep::Resume {
-            state: Binary::from(b"saved".as_slice()),
-            resolution: Resolution::Success {
-                data: Binary::from(b"immediate".as_slice())
-            }
+    for zero_price in [false, true] {
+        let (mut rt, api, mut store, c, mut host) = setup();
+        if zero_price {
+            rt.keeper.config.gas_price = Decimal::zero();
+            rt.keeper.config.min_base_price = Decimal::zero();
         }
-    );
+        let id = register(&rt, &api, &mut store, &c, &mut host);
+        host.outcome = PollOutcome::Pending {
+            state: Binary::from(b"saved".as_slice()),
+            wait: Wait::Operation {
+                resolver: TEST_RESOLVER.into(),
+                deadline: 10,
+                max_result_bytes: 20,
+            },
+        };
+        let mut callback = CallbackHost {
+            inner: host,
+            runtime: &rt,
+            contract: c.clone(),
+            task_id: id,
+        };
+        assert_eq!(
+            rt.run_block(&api, &mut store, 2, &mut callback)
+                .unwrap()
+                .polls,
+            1
+        );
+        assert_no_flight_markers(&store);
+        assert!(rt.task(&store, &c, id, 2).unwrap().inbox.is_some());
+        assert_eq!(
+            rt.run_block(&api, &mut store, 2, &mut callback)
+                .unwrap()
+                .polls,
+            0
+        );
+        callback.inner.outcome = PollOutcome::Complete {
+            output: Binary::default(),
+        };
+        assert_eq!(
+            rt.run_block(&api, &mut store, 3, &mut callback)
+                .unwrap()
+                .polls,
+            1
+        );
+        assert_no_flight_markers(&store);
+        let request: PollRequest =
+            cosmwasm_std::from_json(store.get(b"user/request").unwrap()).unwrap();
+        assert_eq!(
+            request.step,
+            PollStep::Resume {
+                state: Binary::from(b"saved".as_slice()),
+                resolution: Resolution::Success {
+                    data: Binary::from(b"immediate".as_slice())
+                }
+            }
+        );
+    }
 }
 
 #[test]
@@ -2415,7 +2527,7 @@ fn failed_outbound_discards_immediate_callback_and_retains_old_continuation() {
     host.outcome = PollOutcome::Pending {
         state: Binary::from(b"saved".as_slice()),
         wait: Wait::Operation {
-            resolver: "service".into(),
+            resolver: TEST_RESOLVER.into(),
             deadline: 10,
             max_result_bytes: 20,
         },
@@ -2427,7 +2539,8 @@ fn failed_outbound_discards_immediate_callback_and_retains_old_continuation() {
         contract: c.clone(),
         task_id: id,
     };
-    rt.run_block(&mut store, 2, &mut callback).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut callback).unwrap();
+    assert_no_flight_markers(&store);
     let task = rt.task(&store, &c, id, 2).unwrap();
     assert_eq!(task.status, ExecutionStatus::Paused);
     assert!(task.inbox.is_none());
@@ -2443,12 +2556,15 @@ fn application_failure_commits_and_refunds_but_expiry_never_invokes_guest() {
     host.outcome = PollOutcome::Fail {
         error: "business failure".into(),
     };
-    rt.run_block(&mut store, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     let task = rt.task(&store, &c, id, 2).unwrap();
     assert_eq!(task.status, ExecutionStatus::Failed);
     assert!(store.get(b"user/write").is_some());
     let second = register(&rt, &api, &mut store, &c, &mut host);
-    assert_eq!(rt.run_block(&mut store, 20, &mut host).unwrap().polls, 0);
+    assert_eq!(
+        rt.run_block(&api, &mut store, 20, &mut host).unwrap().polls,
+        0
+    );
     assert_eq!(
         rt.task(&store, &c, second, 20).unwrap().status,
         ExecutionStatus::Expired
@@ -2466,11 +2582,11 @@ fn maintenance_and_promotion_caps_bound_work_without_scanning_sleepers() {
         register(&rt, &api, &mut store, &c, &mut host);
     }
     rt.config.max_promotions = 1;
-    let report = rt.run_block(&mut store, 2, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut store, 2, &mut host).unwrap();
     assert_eq!(report.promotions, 1);
     assert_eq!(report.polls, 1);
     rt.config.maintenance_gas = 2;
-    let report = rt.run_block(&mut store, 3, &mut host).unwrap();
+    let report = rt.run_block(&api, &mut store, 3, &mut host).unwrap();
     assert_eq!(report.maintenance_gas_used, 2);
     assert_eq!(report.polls, 0);
     assert_eq!(report.promotions, 0);
@@ -2535,6 +2651,108 @@ struct ReentrantHost<'a> {
     contract: Addr,
     task_id: u64,
     node_fault: bool,
+    other_task: Option<u64>,
+    check_during_poll: bool,
+    deposit: Uint128,
+    dispatch_gas: u64,
+}
+impl ReentrantHost<'_> {
+    fn check_controls(&mut self, s: &mut dyn Storage) {
+        let before: Vec<_> = s
+            .range(None, None, cosmwasm_std::Order::Ascending)
+            .collect();
+        let same_task_cancel = self.runtime.manage(
+            self.api,
+            s,
+            2,
+            &self.contract,
+            SchedulerMsg::CancelTask {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+            },
+            &mut self.inner,
+        );
+        assert!(same_task_cancel.is_err());
+        let same_task_resume = self.runtime.manage(
+            self.api,
+            s,
+            2,
+            &self.contract,
+            SchedulerMsg::ResumeTask {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+            },
+            &mut self.inner,
+        );
+        assert!(same_task_resume.is_err());
+        let same_task_extend = self.runtime.execute(
+            self.api,
+            s,
+            2,
+            &self.contract,
+            RuntimeMsg::ExtendLease {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+                allocated_bytes: 5000,
+                expires_at: 25,
+            },
+            true,
+            &mut self.inner,
+        );
+        assert!(same_task_extend.is_err());
+        let same_task_budget = self.runtime.execute(
+            self.api,
+            s,
+            2,
+            &self.contract,
+            RuntimeMsg::UpdateBudget {
+                task_id: self.task_id,
+                actor: self.contract.to_string(),
+                gas_per_poll: 60,
+                max_gas_price: Decimal::one(),
+                refund: self.contract.to_string(),
+            },
+            true,
+            &mut self.inner,
+        );
+        assert!(same_task_budget.is_err());
+        for error in [
+            same_task_cancel.err(),
+            same_task_resume.err(),
+            same_task_extend.err(),
+            same_task_budget.err(),
+        ] {
+            assert!(error.unwrap().to_string().contains("in-flight"));
+        }
+        assert_eq!(
+            before,
+            s.range(None, None, cosmwasm_std::Order::Ascending)
+                .collect::<Vec<_>>()
+        );
+        if let Some(task_id) = self.other_task {
+            let authorized_other_task_management = self.runtime.execute(
+                self.api,
+                s,
+                2,
+                &self.contract,
+                RuntimeMsg::UpdateBudget {
+                    task_id,
+                    actor: self.contract.to_string(),
+                    gas_per_poll: 40,
+                    max_gas_price: Decimal::one(),
+                    refund: self.contract.to_string(),
+                },
+                true,
+                &mut self.inner,
+            );
+            assert!(authorized_other_task_management.is_ok());
+            assert_eq!(
+                before,
+                s.range(None, None, cosmwasm_std::Order::Ascending)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }
 impl PollHost for ReentrantHost<'_> {
     fn code_checksum(&self, c: &str) -> StdResult<Binary> {
@@ -2547,6 +2765,9 @@ impl PollHost for ReentrantHost<'_> {
         r: &PollRequest,
         g: u64,
     ) -> StdResult<Metered<PollResponse>> {
+        if self.check_during_poll {
+            self.check_controls(s);
+        }
         self.inner.poll(s, c, r, g)
     }
     fn dispatch(
@@ -2559,53 +2780,49 @@ impl PollHost for ReentrantHost<'_> {
         if self.node_fault {
             return Err(cosmwasm_std::StdError::generic_err("database fault"));
         }
-        for msg in [
-            SchedulerMsg::CancelTask {
-                task_id: self.task_id,
-                actor: self.contract.to_string(),
-            },
-            SchedulerMsg::ResumeTask {
-                task_id: self.task_id,
-                actor: self.contract.to_string(),
-            },
-        ] {
-            assert!(self
-                .runtime
-                .manage(self.api, s, 2, &self.contract, msg, &mut self.inner)
-                .is_err());
-        }
-        for msg in [
-            RuntimeMsg::ExtendLease {
-                task_id: self.task_id,
-                actor: self.contract.to_string(),
-                allocated_bytes: 5000,
-                expires_at: 25,
-            },
-            RuntimeMsg::UpdateBudget {
-                task_id: self.task_id,
-                actor: self.contract.to_string(),
-                gas_per_poll: 60,
-                max_gas_price: Decimal::one(),
-                refund: self.contract.to_string(),
-            },
-        ] {
-            assert!(self
-                .runtime
-                .execute(self.api, s, 2, &self.contract, msg, true, &mut self.inner)
-                .is_err());
-        }
-        let funds: TaskFunding = cosmwasm_std::from_json(self.runtime.keeper.query(
-            self.api,
-            s,
-            2,
-            SchedulerQuery::TaskFunding {
-                contract: self.contract.to_string(),
-                task_id: self.task_id,
-            },
-        )?)
-        .unwrap();
-        assert_eq!(funds.reserved, Uint128::new(40));
-        assert_eq!(funds.available, Uint128::new(959));
+        self.check_controls(s);
+        // Exercise the total-liability boundary through the actual nested
+        // management cache, then restore the fixture before its real topup.
+        let key = [
+            b"native-async/v1/task/".as_slice(),
+            self.contract.as_bytes(),
+            b"/",
+            &self.task_id.to_be_bytes(),
+        ]
+        .concat();
+        let original = s.get(&key).unwrap();
+        let mut liability: TaskFunding = cosmwasm_std::from_json(&original).unwrap();
+        liability.available = Uint128::MAX - liability.reserved;
+        s.set(&key, &cosmwasm_std::to_json_vec(&liability).unwrap());
+        let before: Vec<_> = s
+            .range(None, None, cosmwasm_std::Order::Ascending)
+            .collect();
+        let transfers = self.inner.transfers;
+        assert!(self
+            .runtime
+            .manage(
+                self.api,
+                s,
+                2,
+                &self.contract,
+                SchedulerMsg::FundTask {
+                    task_id: self.task_id,
+                    contributor: self.contract.to_string(),
+                    funds: Coin::new(1u128, "ugas"),
+                },
+                &mut self.inner
+            )
+            .is_err());
+        assert_eq!(
+            self.inner.transfers, transfers,
+            "overflow must precede bank movement"
+        );
+        assert_eq!(
+            before,
+            s.range(None, None, cosmwasm_std::Order::Ascending)
+                .collect::<Vec<_>>()
+        );
+        s.set(&key, &original);
         self.runtime.manage(
             self.api,
             s,
@@ -2614,13 +2831,17 @@ impl PollHost for ReentrantHost<'_> {
             SchedulerMsg::FundTask {
                 task_id: self.task_id,
                 contributor: self.contract.to_string(),
-                funds: Coin::new(50u128, "ugas"),
+                funds: Coin::new(self.deposit.u128(), "ugas"),
             },
             &mut self.inner,
         )?;
         Ok(Metered {
-            gas_used: 0,
-            result: Ok(()),
+            gas_used: self.dispatch_gas,
+            result: if self.inner.dispatch_fail {
+                Err(PauseReason::MessageFailure)
+            } else {
+                Ok(())
+            },
         })
     }
     fn transfer(&mut self, s: &mut dyn Storage, f: &Addr, t: &Addr, c: &Coin) -> StdResult<()> {
@@ -2642,8 +2863,13 @@ fn reentrant_control_is_rejected_and_topup_survives_reservation_settlement() {
         contract: c.clone(),
         task_id: id,
         node_fault: false,
+        other_task: None,
+        check_during_poll: true,
+        deposit: Uint128::new(50),
+        dispatch_gas: 0,
     };
-    rt.run_block(&mut store, 2, &mut reentrant).unwrap();
+    rt.run_block(&api, &mut store, 2, &mut reentrant).unwrap();
+    assert_no_flight_markers(&store);
     let funds: TaskFunding = cosmwasm_std::from_json(
         rt.keeper
             .query(
@@ -2663,6 +2889,210 @@ fn reentrant_control_is_rejected_and_topup_survives_reservation_settlement() {
     assert_eq!(funds.cumulative_execution_fees, Uint128::new(9));
 }
 
+fn assert_no_flight_markers(s: &dyn Storage) {
+    let storage_has_prefix = |prefix: &[u8]| {
+        s.range(None, None, cosmwasm_std::Order::Ascending)
+            .any(|(key, _)| key.starts_with(prefix))
+    };
+    assert!(!storage_has_prefix(b"na2/transient/flight/"));
+}
+
+#[test]
+fn zero_price_reentrant_controls_are_rejected() {
+    reentrant_outcomes_reject_controls_and_conserve_funding(true);
+}
+
+#[test]
+fn nested_funding_preserves_reserved_liability() {
+    reentrant_outcomes_reject_controls_and_conserve_funding(false);
+}
+
+// Removing the flight guard must allow a zero-price nested cancellation;
+// dropping the funding reload must lose the nested deposit from settlement.
+fn reentrant_outcomes_reject_controls_and_conserve_funding(zero_price: bool) {
+    for outcome in [
+        PollOutcome::Pending {
+            state: Binary::default(),
+            wait: Wait::Height { height: 4 },
+        },
+        PollOutcome::Yield {
+            state: Binary::default(),
+        },
+        PollOutcome::Complete {
+            output: Binary::default(),
+        },
+        PollOutcome::Fail {
+            error: "business failure".into(),
+        },
+    ] {
+        let terminal = matches!(
+            outcome,
+            PollOutcome::Complete { .. } | PollOutcome::Fail { .. }
+        );
+        let (mut rt, api, mut store, c, mut host) = setup();
+        rt.config.block_gas = 40; // One poll; the independent task's indexes stay intact.
+        if zero_price {
+            rt.keeper.config.gas_price = Decimal::zero();
+            rt.keeper.config.min_base_price = Decimal::zero();
+        }
+        let id = register(&rt, &api, &mut store, &c, &mut host);
+        let other = register(&rt, &api, &mut store, &c, &mut host);
+        let available_before = funding(&rt, &api, &store, &c, id).available;
+        let balance_before: Uint128 =
+            cosmwasm_std::from_json(store.get(format!("bank/{c}").as_bytes()).unwrap()).unwrap();
+        host.outcome = outcome;
+        let mut reentrant = ReentrantHost {
+            inner: host,
+            runtime: &rt,
+            api: &api,
+            contract: c.clone(),
+            task_id: id,
+            node_fault: false,
+            other_task: Some(other),
+            check_during_poll: true,
+            deposit: Uint128::new(50),
+            dispatch_gas: 0,
+        };
+        assert_eq!(
+            rt.run_block(&api, &mut store, 2, &mut reentrant)
+                .unwrap()
+                .polls,
+            1
+        );
+        assert_no_flight_markers(&store);
+        let funding_after = funding(&rt, &api, &store, &c, id);
+        let paid = Uint128::new(if zero_price { 0 } else { 9 });
+        assert_eq!(funding_after.cumulative_execution_fees, paid);
+        assert_eq!(funding_after.reserved, Uint128::zero());
+        if terminal {
+            assert_eq!(funding_after.available, Uint128::zero());
+            let balance_after: Uint128 =
+                cosmwasm_std::from_json(store.get(format!("bank/{c}").as_bytes()).unwrap())
+                    .unwrap();
+            assert_eq!(balance_after, balance_before + available_before - paid);
+        } else {
+            let deposit = Uint128::new(50);
+            assert_eq!(funding_after.available, available_before + deposit - paid);
+            // Management succeeds after the attempt, even at zero price.
+            rt.execute(
+                &api,
+                &mut store,
+                2,
+                &c,
+                RuntimeMsg::ExtendLease {
+                    task_id: id,
+                    actor: c.to_string(),
+                    allocated_bytes: 5000,
+                    expires_at: 25,
+                },
+                true,
+                &mut reentrant.inner,
+            )
+            .unwrap();
+            set_bid_at(
+                &rt,
+                &api,
+                &mut store,
+                &c,
+                &mut reentrant.inner,
+                2,
+                id,
+                40,
+                "1",
+            );
+            rt.manage(
+                &api,
+                &mut store,
+                2,
+                &c,
+                SchedulerMsg::CancelTask {
+                    task_id: id,
+                    actor: c.to_string(),
+                },
+                &mut reentrant.inner,
+            )
+            .unwrap();
+            assert_no_flight_markers(&store);
+        }
+        let untouched = rt.task(&store, &c, other, 2).unwrap();
+        assert_eq!(untouched.expires_at, 20);
+        assert_eq!(untouched.allocated_bytes, 4096);
+        assert_eq!(untouched.last_attempt, None);
+    }
+}
+
+#[test]
+fn failed_nested_funding_rolls_back_and_releases_flight() {
+    for failure in [
+        "dispatch",
+        "dispatch_oog",
+        "poll_oog",
+        "poll_trap",
+        "host_error",
+    ] {
+        let (rt, api, mut store, c, mut host) = setup();
+        let id = register(&rt, &api, &mut store, &c, &mut host);
+        host.outcome = PollOutcome::Yield {
+            state: Binary::default(),
+        };
+        host.dispatch_fail = failure == "dispatch";
+        host.fail = failure == "poll_trap";
+        if failure == "poll_oog" {
+            host.gas = 39;
+        }
+        let mut reentrant = ReentrantHost {
+            inner: host,
+            runtime: &rt,
+            api: &api,
+            contract: c.clone(),
+            task_id: id,
+            node_fault: failure == "host_error",
+            other_task: None,
+            check_during_poll: true,
+            deposit: Uint128::new(50),
+            dispatch_gas: if failure == "dispatch_oog" { 32 } else { 0 },
+        };
+        let before: Vec<_> = store
+            .range(None, None, cosmwasm_std::Order::Ascending)
+            .collect();
+        let result = rt.run_block(&api, &mut store, 2, &mut reentrant);
+        let funds = funding(&rt, &api, &store, &c, id);
+        assert_no_flight_markers(&store);
+        assert!(store.get(b"user/write").is_none());
+        let balance: Uint128 =
+            cosmwasm_std::from_json(store.get(format!("bank/{c}").as_bytes()).unwrap()).unwrap();
+        assert_eq!(balance, Uint128::new(9000));
+        if failure == "host_error" {
+            assert!(result.is_err());
+            assert_eq!(
+                before,
+                store
+                    .range(None, None, cosmwasm_std::Order::Ascending)
+                    .collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(result.unwrap().polls, 1);
+            let paid = Uint128::new(if failure.ends_with("oog") { 40 } else { 9 });
+            assert_eq!(funds.available, Uint128::new(999) - paid);
+            assert_eq!(funds.cumulative_execution_fees, paid);
+            assert_eq!(funds.reserved, Uint128::zero());
+            rt.manage(
+                &api,
+                &mut store,
+                2,
+                &c,
+                SchedulerMsg::ResumeTask {
+                    task_id: id,
+                    actor: c.to_string(),
+                },
+                &mut reentrant.inner,
+            )
+            .unwrap();
+            assert_no_flight_markers(&store);
+        }
+    }
+}
+
 #[test]
 fn node_fault_aborts_entire_block_without_charging_or_marking_height() {
     let (rt, api, mut store, c, mut host) = setup();
@@ -2677,15 +3107,23 @@ fn node_fault_aborts_entire_block_without_charging_or_marking_height() {
         contract: c.clone(),
         task_id: id,
         node_fault: true,
+        other_task: None,
+        check_during_poll: true,
+        deposit: Uint128::new(50),
+        dispatch_gas: 0,
     };
-    assert!(rt.run_block(&mut store, 2, &mut reentrant).is_err());
+    assert!(rt.run_block(&api, &mut store, 2, &mut reentrant).is_err());
+    assert_no_flight_markers(&store);
     assert_eq!(rt.task(&store, &c, id, 2).unwrap().charged, Uint128::zero());
     assert!(store.get(b"user/write").is_none());
     reentrant.node_fault = false;
     assert_eq!(
-        rt.run_block(&mut store, 2, &mut reentrant).unwrap().polls,
+        rt.run_block(&api, &mut store, 2, &mut reentrant)
+            .unwrap()
+            .polls,
         1
     );
+    assert_no_flight_markers(&store);
 }
 
 fn register_with_quota(
@@ -2787,7 +3225,7 @@ fn cancellation_churn_removes_bid_entry_before_releasing_storage() {
     let id = register(&rt, &api, &mut s, &c, &mut host);
     // Promote without polling, leaving a bid entry to clean up.
     rt.config.max_visits = 0;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     assert_eq!(
         s.range(
             Some(b"na2/bid/"),
@@ -2809,7 +3247,7 @@ fn cancellation_churn_removes_bid_entry_before_releasing_storage() {
         &mut host,
     )
     .unwrap();
-    rt.run_block(&mut s, 22, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 22, &mut host).unwrap();
     for prefix in [
         b"na2/ring".as_slice(),
         b"na2/member/",
@@ -2862,7 +3300,7 @@ fn last_active_task_removes_owner_count_and_pruning_keeps_ids() {
             );
         }
     }
-    assert_eq!(rt.run_block(&mut s, 22, &mut host).unwrap().prunes, 3);
+    assert_eq!(rt.run_block(&api, &mut s, 22, &mut host).unwrap().prunes, 3);
     for prefix in [
         b"na2/count/".as_slice(),
         b"na2/task/",
@@ -2917,7 +3355,7 @@ fn exact_quota_covers_maximum_counters_and_every_pause_encoding() {
     s.set(&task_key, &cosmwasm_std::to_json_vec(&task).unwrap());
     s.set(&funding_key, &cosmwasm_std::to_json_vec(&funding).unwrap());
     host.fail = true;
-    assert_eq!(rt.run_block(&mut s, 2, &mut host).unwrap().polls, 1);
+    assert_eq!(rt.run_block(&api, &mut s, 2, &mut host).unwrap().polls, 1);
     let mut task = rt.task(&s, &c, id, 2).unwrap();
     assert_eq!(task.charged, Uint128::MAX);
     assert_eq!(task.status, ExecutionStatus::Paused);
@@ -2954,7 +3392,7 @@ fn exact_quota_preallocates_maximum_readiness_and_bid_metadata() {
     let (mut rt, api, mut s, c, mut host) = setup();
     let id = register_with_quota(&rt, &api, &mut s, &c, &mut host, quota).unwrap();
     rt.config.max_visits = 0;
-    rt.run_block(&mut s, 2, &mut host).unwrap();
+    rt.run_block(&api, &mut s, 2, &mut host).unwrap();
     let mut task = rt.task(&s, &c, id, 2).unwrap();
     let value = serde_json::to_value(&task).unwrap();
     let queue_key: Binary = serde_json::from_value(value["queue_key"].clone()).unwrap();
@@ -3017,12 +3455,12 @@ fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_stat
         host.outcome = PollOutcome::Pending {
             state: Binary::from(b"checkpoint".as_slice()),
             wait: Wait::Operation {
-                resolver: "service".into(),
+                resolver: TEST_RESOLVER.into(),
                 deadline: 10,
                 max_result_bytes: case.max_result_bytes,
             },
         };
-        rt.run_block(&mut store, 2, &mut host).unwrap();
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap();
         let before: Vec<_> = store
             .range(None, None, cosmwasm_std::Order::Ascending)
             .collect();
@@ -3032,7 +3470,7 @@ fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_stat
             &contract,
             id,
             1,
-            "service",
+            TEST_RESOLVER,
             case.resolution.clone(),
             false,
         );
@@ -3047,7 +3485,10 @@ fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_stat
             host.outcome = PollOutcome::Complete {
                 output: Binary::default(),
             };
-            assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 1);
+            assert_eq!(
+                rt.run_block(&api, &mut store, 3, &mut host).unwrap().polls,
+                1
+            );
             let request: PollRequest =
                 cosmwasm_std::from_json(store.get(b"user/request").unwrap()).unwrap();
             assert_eq!(
@@ -3064,7 +3505,10 @@ fn shared_go_rust_result_boundaries_use_payload_bytes_and_preserve_rejected_stat
                 .range(None, None, cosmwasm_std::Order::Ascending)
                 .collect();
             assert_eq!(after, before, "{}", case.name);
-            assert_eq!(rt.run_block(&mut store, 3, &mut host).unwrap().polls, 0);
+            assert_eq!(
+                rt.run_block(&api, &mut store, 3, &mut host).unwrap().polls,
+                0
+            );
         }
     }
 }
@@ -3077,12 +3521,12 @@ fn delivery_marks_funding_runnable_in_both_phases() {
         host.outcome = PollOutcome::Pending {
             state: Binary::from(b"saved".as_slice()),
             wait: Wait::Operation {
-                resolver: "service".into(),
+                resolver: TEST_RESOLVER.into(),
                 deadline: 5,
                 max_result_bytes: 30,
             },
         };
-        rt.run_block(&mut store, 2, &mut host).unwrap();
+        rt.run_block(&api, &mut store, 2, &mut host).unwrap();
         assert_eq!(
             funding(&rt, &api, &store, &c, id).status,
             TaskStatus::Waiting
@@ -3090,8 +3534,17 @@ fn delivery_marks_funding_runnable_in_both_phases() {
         let good = Resolution::Success {
             data: Binary::from(b"yes".as_slice()),
         };
-        rt.deliver(&mut store, 3, &c, id, 1, "service", good, scheduler_phase)
-            .unwrap();
+        rt.deliver(
+            &mut store,
+            3,
+            &c,
+            id,
+            1,
+            TEST_RESOLVER,
+            good,
+            scheduler_phase,
+        )
+        .unwrap();
         assert_eq!(
             funding(&rt, &api, &store, &c, id).status,
             TaskStatus::Runnable,
@@ -3123,12 +3576,12 @@ fn rejected_refund_never_blocks_scheduler_terminal_transitions() {
                 state: Binary::from(b"saved".as_slice()),
                 wait: Wait::Height { height: 19 },
             };
-            rt.run_block(&mut store, 2, &mut host).unwrap();
+            rt.run_block(&api, &mut store, 2, &mut host).unwrap();
         }
         store.set(format!("bank/blocked/{c}").as_bytes(), b"1");
         let escrow_before = bank(&store, &rt.keeper.escrow);
         let height = if expire { 20 } else { 2 };
-        let report = rt.run_block(&mut store, height, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut store, height, &mut host).unwrap();
         assert_eq!(report.stranded_refunds, 1, "expire={expire}");
         let task = rt.task(&store, &c, id, height).unwrap();
         let expected = if expire {
@@ -3143,7 +3596,8 @@ fn rejected_refund_never_blocks_scheduler_terminal_transitions() {
         assert!(bank(&store, &rt.keeper.escrow) >= escrow_before - task.charged);
         assert!(!bank(&store, &rt.keeper.escrow).is_zero());
         // Later blocks keep making progress.
-        rt.run_block(&mut store, height + 1, &mut host).unwrap();
+        rt.run_block(&api, &mut store, height + 1, &mut host)
+            .unwrap();
     }
 }
 
@@ -3200,7 +3654,7 @@ fn rejected_refund_falls_back_to_control_then_owner() {
             store.set(format!("bank/blocked/{who}").as_bytes(), b"1");
         }
         let before: Vec<Uint128> = order.iter().map(|a| bank(&store, a)).collect();
-        let report = rt.run_block(&mut store, 2, &mut host).unwrap();
+        let report = rt.run_block(&api, &mut store, 2, &mut host).unwrap();
         assert_eq!(
             report.redirected_refunds,
             u32::from(blocked == 1 || blocked == 2)

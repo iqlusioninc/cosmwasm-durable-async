@@ -448,7 +448,7 @@ impl Runtime {
         if terminal(&t) || h >= t.expires_at {
             return Err(err("task is terminal or expired"));
         }
-        if !t.reserved.is_zero() || !f.reserved.is_zero() {
+        if is_in_flight(&cache, c.as_str(), id) || !t.reserved.is_zero() || !f.reserved.is_zero() {
             return Err(err("cannot manage an in-flight poll"));
         }
         match msg {
@@ -798,7 +798,7 @@ impl Runtime {
         let mut cache = Cache::new(s);
         let keeper = self.live_keeper(&cache)?;
         let mut t = load(&cache, c.as_str(), id)?;
-        if !t.reserved.is_zero() && (resume || cancel) {
+        if (resume || cancel) && (is_in_flight(&cache, c.as_str(), id) || !t.reserved.is_zero()) {
             return Err(err("cannot manage an in-flight poll"));
         }
         let response = keeper.execute_runtime(api, &mut cache, h, c, msg, |s, f, t, c| {
@@ -942,6 +942,7 @@ impl Runtime {
 
     fn stage(
         &self,
+        api: &dyn Api,
         s: &mut dyn Storage,
         t: &mut ExecutionTask,
         h: u64,
@@ -964,13 +965,16 @@ impl Runtime {
                         deadline,
                         max_result_bytes,
                     } => {
-                        if resolver.is_empty() || resolver.len() > 256 {
+                        if api.addr_validate(resolver)?.as_str() != resolver {
                             return Err(err("invalid resolver"));
                         }
                         (*deadline, u64::from(*max_result_bytes))
                     }
                 };
-                if due <= h || state.len() as u64 + reserved > t.allocated_bytes {
+                if due <= h
+                    || due >= t.expires_at
+                    || state.len() as u64 + reserved > t.allocated_bytes
+                {
                     return Err(err("invalid wait or storage quota"));
                 }
                 t.wait_sequence = t
@@ -1009,17 +1013,19 @@ impl Runtime {
 
     pub fn run_block(
         &self,
+        api: &dyn Api,
         s: &mut dyn Storage,
         h: u64,
         host: &mut impl PollHost,
     ) -> StdResult<BlockReport> {
         let mut cache = Cache::new(s);
-        let report = self.run_block_cached(&mut cache, h, host)?;
+        let report = self.run_block_cached(api, &mut cache, h, host)?;
         cache.commit();
         Ok(report)
     }
     fn run_block_cached(
         &self,
+        api: &dyn Api,
         s: &mut dyn Storage,
         h: u64,
         host: &mut impl PollHost,
@@ -1238,6 +1244,8 @@ impl Runtime {
                     step,
                 };
                 let mut cache = Cache::new(s);
+                let flight = flight_key(&c, t.task_id);
+                cache.set(&flight, b"1");
                 let mut gas = self.config.host_gas;
                 let result = if host.code_checksum(&c)? != t.code_checksum {
                     Err(PauseReason::InvalidResponse)
@@ -1251,7 +1259,10 @@ impl Runtime {
                             Err(reason) => Err(reason),
                             Ok(response) => {
                                 let mut staged = t.clone();
-                                if self.stage(&mut cache, &mut staged, h, &response).is_err() {
+                                if self
+                                    .stage(api, &mut cache, &mut staged, h, &response)
+                                    .is_err()
+                                {
                                     Err(PauseReason::InvalidResponse)
                                 } else {
                                     let dispatched = host.dispatch(
@@ -1274,6 +1285,7 @@ impl Runtime {
                     }
                 };
                 if result.is_ok() {
+                    cache.remove(&flight);
                     cache.commit();
                     t = load(s, &c, t.task_id)?;
                     f = host::load(s, &addr, t.task_id)?;

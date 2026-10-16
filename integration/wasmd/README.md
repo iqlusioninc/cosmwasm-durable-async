@@ -6,12 +6,13 @@ The Go module checksums are committed. Go 1.27.2 compiles the packages but canno
 link this dependency graph (`encoding/json.unquoteBytes` in upstream sonic), so
 the scripts explicitly select 1.23.6.
 
-Build both real Rust artifact sets from the repository root, then run the full
-keeper/app suite (which now includes DCA acceptance):
+Build all three real Rust artifact sets from the repository root, then run the
+full keeper/app suite (including DCA and auction acceptance):
 
 ```sh
 bash contracts/native-fulfill/build-wasmd.sh
 bash contracts/native-dca/build-wasmd.sh
+bash contracts/native-batch-auction/build-wasmd.sh
 bash integration/wasmd/test.sh
 ```
 
@@ -116,8 +117,55 @@ lease quote. The example-local ABCI wrapper uses per-connection Comet clients
 and serializes app operations separately from its shutdown-aware gate, allowing
 committed RPC inspection while the next block waits. No production hook changes.
 
-The demo uses a strictly positive price floor. N1/N2/R1 remain open; neither
-these scenarios nor the tutorial claim a runtime repair or formal proof.
+The DCA demo uses a strictly positive price floor. The Stage A
+[verification receipt](../../docs/reviews/2026-10-15-native-batch-auction-verification.md)
+records the separate N1/N2 runtime regressions and repairs. R1 remains an explicit
+scheduling-policy limitation; DCA scenario passes alone establish no runtime
+repair or formal proof.
+
+## Local auction scenarios
+
+The [auction tutorial](../../contracts/native-batch-auction/README.md) documents
+the exact five-bid book, commitment client, funding, control and principal claims:
+
+```sh
+bash scripts/native-auction-demo.sh happy
+bash scripts/native-auction-demo.sh funding
+bash scripts/native-auction-demo.sh restart
+bash scripts/native-auction-demo.sh expiry
+bash scripts/native-auction-demo.sh all
+```
+
+The runner rebuilds auction artifacts and enables `TestNativeAuctionDemo` with
+`NATIVE_AUCTION_DEMO=1`/`NATIVE_AUCTION_SCENARIO`. It uses only the normal auction
+artifact and reuses the reviewed auction loopback-node/restart/gate infrastructure.
+The real child mode is `NATIVE_AUCTION_NETWORK_CHILD`, distinct from DCA. The
+separate fault artifact is reserved for acceptance tests. Signed transactions
+reuse the generic durable journal; first broadcasts preserve commit order while
+hash lookups run concurrently. Lost responses never authorize resubmission.
+
+`NATIVE_AUCTION_OUTPUT` selects an existing output directory; relative paths are
+resolved against the repository root before entering the Go directory. Each
+invocation creates a fresh `run.*`, with immutable 0600 Node-generated random
+salts, signed transaction journals, query receipts and owned-node logs. A fresh
+suite index and receipt verifier require the selected scenarios, exact artifact,
+completed principal claims and child exits. Missing/skipped Go tests or stale
+receipts cannot count as demo success. No account signing keys are retained.
+
+Application `finalized`/`aborted` and host task status are separate receipt fields;
+claims are exercised after host pruning. Funding demonstrates a genuine partial
+`insufficient_funds` pause, sponsor top-up, seller ceiling increase without
+implicit resume, and explicit seller resume. Restart covers both a committed
+nonempty batch and finalized-but-unclaimed state before the next block.
+Auction state sync is a separate opt-in `NATIVE_AUCTION_NETWORK_TEST=1` suite;
+enable the old `NATIVE_ASYNC_NETWORK_TEST=1` independently for its regression.
+
+All builders write shared checkout `artifacts/` in place. Serialize builders and
+public demo scripts with other host/network tests or demos reading those files,
+or use separate clones/artifact directories. `CARGO_TARGET_DIR` alone separates
+build intermediates, not the shared artifacts. This is local harness resource
+coupling, not a runtime defect. Exact commands, stable-artifact mitigation,
+hashes, model limits and final independent-review status are in the receipt.
 
 ## Required native error boundary
 

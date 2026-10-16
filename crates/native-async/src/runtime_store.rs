@@ -3,6 +3,22 @@ use cosmwasm_std::{from_json, to_json_vec, Order, Record, StdError, StdResult, S
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 
+/// Execution identity lives only in the per-attempt cache, never durable state.
+pub(crate) fn flight_key(contract: &str, id: u64) -> Vec<u8> {
+    // A length-prefixed address and fixed-width task ID cannot alias.
+    [
+        b"na2/transient/flight/".as_slice(),
+        &(contract.len() as u64).to_be_bytes(),
+        contract.as_bytes(),
+        &id.to_be_bytes(),
+    ]
+    .concat()
+}
+
+pub(crate) fn is_in_flight(storage: &dyn Storage, contract: &str, id: u64) -> bool {
+    storage.get(&flight_key(contract, id)).is_some()
+}
+
 pub(crate) struct Cache<'a> {
     base: &'a mut dyn Storage,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,

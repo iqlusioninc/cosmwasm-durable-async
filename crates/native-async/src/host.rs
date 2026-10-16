@@ -146,6 +146,11 @@ impl Keeper {
                 let contributor = api.addr_validate(&contributor)?;
                 let mut task = load(storage, contract, task_id)?;
                 active(&task, height)?;
+                // The reserved amount returns to available during settlement;
+                // the entire liability must remain representable before funds move.
+                task.available
+                    .checked_add(task.reserved)?
+                    .checked_add(funds.amount)?;
                 task.available = task
                     .available
                     .checked_add(funds.amount)

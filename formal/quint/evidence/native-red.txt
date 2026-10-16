@@ -1,0 +1,118 @@
+Unchanged native model with new tests: exit 1; six assertion failures.
+Overflow and existing flight guard cases passed initially; not claimed as new red regressions.
+
+  native_async_tests
+    1) nestedFundingCommitsTest failed after 1 test(s)
+    2) nestedOtherTaskControlCommitAndRollbackTest failed after 1 test(s)
+    3) nestedFundingRollbackKeepsConsumedFeesTest failed after 1 test(s)
+    4) nestedDeliveryCommitAndRollbackTest failed after 1 test(s)
+    ok totalLiabilityOverflowRejectedTest passed 1 test(s)
+    ok sameTaskGuardAllOutcomesAndPostAttemptTest passed 1 test(s)
+    5) dueBoundariesRollbackNestedEffectsTest failed after 1 test(s)
+    6) restoreRejectsInvalidWaitAndFlightTest failed after 1 test(s)
+    ok registrationTest passed 1 test(s)
+    ok contributorCannotResumeTest passed 1 test(s)
+    ok zeroPriceFlightGuardTest passed 1 test(s)
+    ok acceptedInboxSurvivesFailedPollTest passed 1 test(s)
+    ok acceptedResultBeatsDeadlineTest passed 1 test(s)
+    ok duplicateHeightPollRejectedTest passed 1 test(s)
+    ok maturedWaitPricePauseResumeTest passed 1 test(s)
+    ok expiryBoundaryWaitRejectedTest passed 1 test(s)
+    ok restoreMetadataRejectedTest passed 1 test(s)
+    ok restoreNextStepTest passed 1 test(s)
+    ok visitCapContentionTest passed 1 test(s)
+    ok fixedContractRoundRobinTest passed 1 test(s)
+    ok graceAgeSurvivesPolicyEditTest passed 1 test(s)
+    ok leaseExtensionPaysStorageTest passed 1 test(s)
+    ok applicationFailureCommitsAndRefundsTest passed 1 test(s)
+    ok generationMetadataRejectedTest passed 1 test(s)
+    ok blockStartPriceAndUpdateTest passed 1 test(s)
+    ok fixedPriceDoesNotUpdateTest passed 1 test(s)
+    ok expiredTaskCannotPollTest passed 1 test(s)
+    ok expiredOversizedAuctionSettlesTest passed 1 test(s)
+    ok expiredFixedInsufficientGasPreservesRingTest passed 1 test(s)
+    ok auctionPendingReservesDueSlotTest passed 1 test(s)
+    ok delayedAuctionPromotionPreservesGraceTest passed 1 test(s)
+    ok reverseMaintenancePreservesAuctionFifoTest passed 1 test(s)
+    ok equalBidEarlierReadinessBeatsSequenceTest passed 1 test(s)
+    ok restoredDelayedWaitPreservesAuctionSuccessorTest passed 1 test(s)
+    ok delayedFixedPromotionAllocatesCurrentSlotTest passed 1 test(s)
+    ok corruptAccountingRestoreRejectedTest passed 1 test(s)
+    ok acceptedInboxConsumedOnceTest passed 1 test(s)
+    ok unexpiredOperationTimeoutTest passed 1 test(s)
+    ok pricedOutInspectionDoesNotPollTest passed 1 test(s)
+    ok prunedIdentityCannotBeReusedTest passed 1 test(s)
+    ok restartRebuildsQueueAndRingSuccessorTest passed 1 test(s)
+    ok restartDiscardsExecutionCacheTest passed 1 test(s)
+    ok omittedReconstructionLosesRunnableSuccessorTest passed 1 test(s)
+    ok missingDurableRingRejectedTest passed 1 test(s)
+    ok midBlockCheckpointRejectedTest passed 1 test(s)
+
+  39 passing (200ms)
+  6 failed
+
+  1) nestedFundingCommitsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:10:5
+        10:     assert(funded.tasks.get(1).balance == 6 and done.tasks.get(1).balance == 6 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        11:       done.deposits == 9 and conservationOf(done))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=nestedFundingCommitsTest to repeat.
+  2) nestedOtherTaskControlCommitAndRollbackTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:18:5
+        18:     assert(nested.tasks.get(2).status == "cancelled" and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        19:       committed.tasks.get(2).status == "cancelled" and failed.tasks.get(2) == p.tasks.get(2) and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        20:       failed.refunds == 0 and failed.fees == 3 and conservationOf(failed))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=nestedOtherTaskControlCommitAndRollbackTest to repeat.
+  3) nestedFundingRollbackKeepsConsumedFeesTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:25:5
+        25:     assert(nested.deposits == 9 and failed.deposits == 8 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        26:       failed.tasks.get(1).balance == 5 and failed.fees == 2 and conservationOf(failed))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=nestedFundingRollbackKeepsConsumedFeesTest to repeat.
+  4) nestedDeliveryCommitAndRollbackTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:32:5
+        32:     assert(p.flight == 2 and nested.tasks.get(1).inbox == 1 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        33:       finish(nested, "yield", 1, 0).tasks.get(1).inbox == 1 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        34:       finish(nested, "rollback", 1, 0).tasks.get(1).inbox == 0)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=nestedDeliveryCommitAndRollbackTest to repeat.
+  5) dueBoundariesRollbackNestedEffectsTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:51:5
+        51:     assert(Set("timer", "operation").forall(outcome => Set(1, 3, 4, 5).forall(due => {
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        52:       val nested = fund(pollingTask, 1, 2)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        53:       val done = finish(nested, outcome, 1, due)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        54:       if (due == 3) done.tasks.get(1).status == "waiting" and done.deposits == 9
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        55:       else done.tasks.get(1).reason == "invalid" and done.deposits == 8 and done.fees == 2
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        56:     })))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=dueBoundariesRollbackNestedEffectsTest to repeat.
+  6) restoreRejectsInvalidWaitAndFlightTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:63:5
+        63:     assert(not(checkpointValid(bad)) and not(checkpointValid(checkpoint(pollingTask))) and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        64:       restore(initial(true, 1), saved, true).flight == 0)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=restoreRejectsInvalidWaitAndFlightTest to repeat.
+
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_async_tests.qnt
+error: Tests failed
