@@ -2,9 +2,9 @@
 
 Date: 2026-10-15
 
-Status: written specification awaiting user review. The suite architecture was
-approved conversationally; this document's detailed rules are proposed for that
-review, not already implemented or tested.
+Status: written specification approved on 2026-10-15. The
+[implementation plan](../plans/2026-10-15-native-batch-auction.md) awaits review;
+the rules below are not yet implemented or tested.
 
 ## Purpose and scope
 

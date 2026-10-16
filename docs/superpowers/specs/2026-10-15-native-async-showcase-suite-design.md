@@ -2,7 +2,8 @@
 
 Date: 2026-10-15
 
-Status: conversational architecture approved; written design awaiting review.
+Status: written design approved on 2026-10-15; Stage A implementation plan awaiting
+review. See the [plan](../plans/2026-10-15-native-batch-auction.md).
 This document specifies the suite's boundaries and dependencies, not a completed
 implementation or a single implementation plan for all stages.
 
