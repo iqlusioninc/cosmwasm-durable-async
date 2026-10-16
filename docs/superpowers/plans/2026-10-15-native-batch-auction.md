@@ -648,8 +648,8 @@ without resubmission. Do not persist non-test signing keys.
 - [x] Apply the whole-branch review's scoped publication, instrumentation naming
   and status cleanup. These changes do not alter production behavior; existing
   behavioral tests remain the regression coverage.
-- [ ] Complete one independent cleanup re-review; the controller will mark this
-  gate complete only after the actual verdict.
+- [x] Complete one independent cleanup re-review; all three findings addressed,
+  no new breakage. The controller recorded the actual approval verdict.
 - [x] Commit documentation and receipt as `docs: ship native batch auction recovery examples`.
 
 ## Acceptance, scope coverage and handoff
@@ -669,7 +669,8 @@ expansion here.
 Tasks 1–9 are implemented, verified and independently reviewed. The completed
 whole-branch adversarial review found no new runtime/custody correctness blocker;
 its publication cleanup and precise instrumentation naming are addressed here.
-One independent cleanup re-review remains pending, so Stage A's final handoff
-gate is still open. Evidence and deferred dispositions are recorded in the
+The independent cleanup re-review approved all findings with no new breakage;
+Stage A's local implementation and review gates are complete. Evidence and
+deferred dispositions are recorded in the
 [verification receipt](../../reviews/2026-10-15-native-batch-auction-verification.md).
 No push, new PR, merge or public deployment is included without a subsequent request.

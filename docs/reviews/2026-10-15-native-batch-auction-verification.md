@@ -2,10 +2,10 @@
 
 Date: 2026-10-15. Tasks 1–9, their required verification and independent task
 reviews are complete. Independent whole-branch adversarial review is complete;
-its scoped publication, instrumentation naming and status cleanup is implemented.
-One independent cleanup re-review remains pending, so Stage A's final handoff
-gate is still open. No push, PR, merge, public deployment or production readiness
-is claimed.
+its scoped publication, instrumentation naming and status cleanup is implemented
+and independently approved. All three cleanup findings are addressed with no new
+breakage. Stage A's local implementation and review gates are complete. No push,
+PR, merge, public deployment or production readiness is claimed.
 
 Task 9 review base: `289da04424d7ac20a1da810cc108e2d2366a4664`.
 Executable verification source: `e39d3792f18e5001f1e51469c6ff4ca0766747bd`, clean
@@ -16,13 +16,18 @@ The subsequent documentation and test-instrumentation naming cleanup changes
 no production Rust, Go or formal source from cleanup base
 `38a8aeb818b6e1f5317f39fadb1e4d572f0d32b7`.
 
-The separate local `feat/native-batch-auction-ready` handoff preserves the same
-tracked tree with one new commit parented directly at the approved plan base
-`eb2bf5aac63fdb714e68b871b49da8dc3c798e7c` (`docs/async-showcase-suite`).
+The separate local `feat/native-batch-auction-ready` handoff starts with the
+squashed implementation commit `453ffc9c159cde4f3bbb4f4bcf61e4400b89d5aa`, parented
+directly at approved plan base `eb2bf5aac63fdb714e68b871b49da8dc3c798e7c`
+(`docs/async-showcase-suite`). Its tree is identical to preserved implementation
+cleanup commit `034a89f52ab4b303bb80f82d950335590bf438ad`; the subsequent completion
+record changes only documentation.
 Task 6/7 controller reports remain available locally but are excluded from its
 tree and complete reachable history. The detailed implementation branch is
 preserved without rewriting it. Historical source identities in this receipt
 identify local evidence; no claim is made that those old commits are public.
+If publication is later authorized, publish only the ready branch, never `--all`
+or the preserved implementation branch containing historical controller reports.
 
 ## Evidence layers
 
@@ -271,8 +276,13 @@ Deferred dispositions remain explicit:
   or merge authorization. Stage A alone is implemented; jobs, waitsets and IBC
   remain on the approved roadmap.
 
-One scoped independent cleanup re-review remains pending. Only the controller
-will mark that final gate complete after the actual verdict.
+The scoped independent cleanup re-review approved all three findings: publication
+tree/history exclusion with local evidence retained, accurate distinct-record
+instrumentation, and completion-status reconciliation. It found no new breakage
+or new out-of-scope issue. The reviewer inspected the recorded verification and
+freshly checked history/tree/source boundaries without rerunning suites. This
+completion record closes the administrative gate; it grants no merge or
+publication authority.
 
 ## Cleanup verification
 

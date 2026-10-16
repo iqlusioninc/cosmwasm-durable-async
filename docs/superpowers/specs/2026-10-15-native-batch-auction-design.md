@@ -6,8 +6,9 @@ Status: the approved
 [implementation plan](../plans/2026-10-15-native-batch-auction.md) has completed
 Tasks 1–9 and their independent reviews. Whole-branch adversarial review is
 complete with no new runtime/custody correctness blocker; its publication,
-instrumentation naming and status cleanup is implemented. One independent
-cleanup re-review remains pending before the Stage A final handoff gate closes.
+instrumentation naming and status cleanup is implemented and independently
+approved with no new breakage. Stage A's local implementation and review gates
+are complete.
 Runnable scenarios, verification and deferred dispositions are recorded in the
 [verification receipt](../../reviews/2026-10-15-native-batch-auction-verification.md).
 This local Stage A evidence is not production-readiness proof or merge authorization.

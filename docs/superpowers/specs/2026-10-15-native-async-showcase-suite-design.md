@@ -2,8 +2,8 @@
 
 Date: 2026-10-15
 
-Status: written design approved on 2026-10-15. Stage A's Tasks 1–9 and independent
-task/whole-branch reviews are complete; one cleanup re-review remains pending.
+Status: written design approved on 2026-10-15. Stage A's Tasks 1–9, independent
+task/whole-branch reviews and scoped cleanup re-review are complete.
 See the [plan](../plans/2026-10-15-native-batch-auction.md) and
 [verification receipt](../../reviews/2026-10-15-native-batch-auction-verification.md).
 This roadmap retains the boundaries and dependencies for later jobs, waitsets
@@ -234,6 +234,7 @@ observations. Existing PR evidence is not automatically inherited by new artifac
 
 Stage A now implements the scoped native runtime repairs and auction, with
 local verification and completed independent task/whole-branch reviews recorded
-in its receipt. The final handoff still awaits one cleanup re-review. This is
-not production-readiness proof, merge authorization or remote publication.
+in its receipt. The scoped cleanup re-review approved all findings with no new
+breakage. This is not production-readiness proof, merge authorization or remote
+publication.
 Later jobs, waitsets and IBC stages retain their own plans and design gates.
