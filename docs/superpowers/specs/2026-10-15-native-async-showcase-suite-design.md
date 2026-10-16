@@ -2,10 +2,12 @@
 
 Date: 2026-10-15
 
-Status: written design approved on 2026-10-15; Stage A implementation plan awaiting
-review. See the [plan](../plans/2026-10-15-native-batch-auction.md).
-This document specifies the suite's boundaries and dependencies, not a completed
-implementation or a single implementation plan for all stages.
+Status: written design approved on 2026-10-15. Stage A's Tasks 1–9 and independent
+task/whole-branch reviews are complete; one cleanup re-review remains pending.
+See the [plan](../plans/2026-10-15-native-batch-auction.md) and
+[verification receipt](../../reviews/2026-10-15-native-batch-auction-verification.md).
+This roadmap retains the boundaries and dependencies for later jobs, waitsets
+and IBC stages, which are not delivered by the Stage A implementation.
 
 ## Intent and success criteria
 
@@ -230,7 +232,8 @@ observations. Existing PR evidence is not automatically inherited by new artifac
 
 ## Handoff
 
-The current deliverable is this roadmap and Stage A's specification. Neither
-implements a runtime fix, auction, job protocol, waitset, or asset-transfer adapter.
-After written-spec approval, create the first concrete implementation plan and
-select its execution method. Later stages retain their own design gates.
+Stage A now implements the scoped native runtime repairs and auction, with
+local verification and completed independent task/whole-branch reviews recorded
+in its receipt. The final handoff still awaits one cleanup re-review. This is
+not production-readiness proof, merge authorization or remote publication.
+Later jobs, waitsets and IBC stages retain their own plans and design gates.

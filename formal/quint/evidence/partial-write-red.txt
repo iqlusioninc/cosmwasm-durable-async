@@ -1,0 +1,7 @@
+Command: node_modules/.bin/quint test native_batch_auction_tests.qnt --backend=typescript --seed=1 --max-samples=1 --match=injectedFailureStopsAfterFirstItemTest
+Exit: 1
+Before limiting fault injection to the first batch item, injectedFailureStopsAfterFirstItemTest failed after 1 test(s).
+Error [QNT508]: Assertion failed
+Assertion required cursor == 1 after fault injection into an AllocateBase batch of size 2; old code advanced cursor to 2.
+error: Tests failed
+After repair the full auction suite passed 15 cases; see final-unified.txt.

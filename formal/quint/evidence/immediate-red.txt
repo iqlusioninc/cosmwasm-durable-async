@@ -1,0 +1,39 @@
+Immediate same-task callback tests against a no-op staged-pending transition, exit 1.
+
+  native_async_tests
+    1) immediateSameTaskDeliveryCommitTest failed after 1 test(s)
+    2) immediateSameTaskDeliveryRollbackTest failed after 1 test(s)
+
+  2 failed
+
+  1) immediateSameTaskDeliveryCommitTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:10:5
+        10:     assert(staged.flight == 1 and delivered.tasks.get(1).inbox == 1 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        11:       control(delivered, 1, 1, "cancel", 0, false) == delivered and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        12:       finished.flight == 0 and finished.tasks.get(1).status == "due" and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        13:       finished.tasks.get(1).continuation == 1 and finished.tasks.get(1).accepted == 1 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        14:       finished.tasks.get(1).consumed == 0 and finished.tasks.get(1).inbox == 1 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        15:       inspect(finished).flight == 0 and conservationOf(finished))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=immediateSameTaskDeliveryCommitTest to repeat.
+  2) immediateSameTaskDeliveryRollbackTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:21:5
+        21:     assert(delivered.tasks.get(1).inbox == 1 and failed.tasks.get(1).inbox == 0 and
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        22:       failed.tasks.get(1).accepted == 0 and failed.tasks.get(1).generation == 0 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        23:       failed.tasks.get(1).continuation == 0 and failed.deposits == 8 and failed.fees == 2)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=immediateSameTaskDeliveryRollbackTest to repeat.
+
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_async_tests.qnt
+error: Tests failed

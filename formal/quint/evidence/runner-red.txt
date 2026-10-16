@@ -1,0 +1,42 @@
+Runner coverage requirement test first (exit 1).
+✖ required auction witness counts reject zero, missing, and malformed results (2.381833ms)
+✔ all five auction mutations fail with exact diagnostics and retained ITF evidence (6083.798084ms)
+✔ missing CLI makes the unified runner fail before any success summary (208.223125ms)
+✔ invalid model fails as a positive check (457.650958ms)
+✔ a genuine invariant failure fails a positive check (506.1235ms)
+✔ a parser error cannot satisfy an expected invariant counterexample (391.012708ms)
+✔ expected invariant and assertion controls require their real diagnostics (835.363542ms)
+✔ a successful process containing a diagnostic does not satisfy a negative control (0.235833ms)
+✔ an unrelated CLI error cannot hide behind an expected counterexample diagnostic (0.163416ms)
+✔ a Node permission error cannot hide behind an expected negative diagnostic (0.241667ms)
+✔ explicit extended mode fails when its server is unavailable (465.089625ms)
+✔ unknown runner options fail instead of silently running another mode (153.9345ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 11
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9241.753
+
+✖ failing tests:
+
+test at verify.test.mjs:16:1
+✖ required auction witness counts reject zero, missing, and malformed results (2.381833ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + 'undefined'
+  - 'function'
+
+      at TestContext.<anonymous> (file:///private/tmp/auction-formal.00Ky3u/formal/quint/verify.test.mjs:18:10)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'undefined',
+    expected: 'function',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

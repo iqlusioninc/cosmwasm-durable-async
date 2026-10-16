@@ -1,0 +1,427 @@
+Command: npm run parse && npm run typecheck && npm test && QUINT_RESULTS_DIR="$(mktemp -d /private/tmp/auction-quint.XXXXXX)" npm run verify
+Exit: 0
+
+> cosmwasm-durable-async-formal@0.0.0 parse
+> bash verify.sh --parse
+
+Quint 0.33.0; Node v26.11.1; TypeScript evaluator
+parse pricing.qnt: passed
+parse pricing_tests.qnt: passed
+parse native_async.qnt: passed
+parse native_async_tests.qnt: passed
+parse native_profiles.qnt: passed
+parse service_waits.qnt: passed
+parse service_waits_tests.qnt: passed
+parse ibc_waits.qnt: passed
+parse ibc_waits_tests.qnt: passed
+parse native_batch_auction.qnt: passed
+parse native_batch_auction_tests.qnt: passed
+parse native_batch_auction_profiles.qnt: passed
+
+> cosmwasm-durable-async-formal@0.0.0 typecheck
+> bash verify.sh --typecheck
+
+Quint 0.33.0; Node v26.11.1; TypeScript evaluator
+typecheck pricing.qnt: passed
+typecheck pricing_tests.qnt: passed
+typecheck native_async.qnt: passed
+typecheck native_async_tests.qnt: passed
+typecheck native_profiles.qnt: passed
+typecheck service_waits.qnt: passed
+typecheck service_waits_tests.qnt: passed
+typecheck ibc_waits.qnt: passed
+typecheck ibc_waits_tests.qnt: passed
+typecheck native_batch_auction.qnt: passed
+typecheck native_batch_auction_tests.qnt: passed
+typecheck native_batch_auction_profiles.qnt: passed
+
+> cosmwasm-durable-async-formal@0.0.0 test
+> bash verify.sh --tests && node --test verify.test.mjs
+
+Quint 0.33.0; Node v26.11.1; TypeScript evaluator
+
+  pricing_tests
+    ok fullTest passed 1 test(s)
+    ok emptyTest passed 1 test(s)
+    ok at_targetTest passed 1 test(s)
+    ok floor_clampTest passed 1 test(s)
+    ok sub_atomic_stepTest passed 1 test(s)
+    ok truncationTest passed 1 test(s)
+    ok saturateTest passed 1 test(s)
+    ok charge_zero_gasTest passed 1 test(s)
+    ok charge_zero_priceTest passed 1 test(s)
+    ok charge_one_atomicTest passed 1 test(s)
+    ok charge_one_unitTest passed 1 test(s)
+    ok charge_round_upTest passed 1 test(s)
+    ok charge_max_priceTest passed 1 test(s)
+    ok charge_max_widthTest passed 1 test(s)
+    ok target_zero_rejectedTest passed 1 test(s)
+    ok denominator_zero_rejectedTest passed 1 test(s)
+    ok valid_price_domainTest passed 1 test(s)
+    ok negative_base_rejectedTest passed 1 test(s)
+    ok oversized_price_rejectedTest passed 1 test(s)
+    ok charge_overflow_rejectedTest passed 1 test(s)
+    ok charge_valid_domainTest passed 1 test(s)
+    ok negative_gas_rejectedTest passed 1 test(s)
+    ok oversized_gas_rejectedTest passed 1 test(s)
+    ok negative_price_rejectedTest passed 1 test(s)
+    ok oversized_fee_price_rejectedTest passed 1 test(s)
+    ok negative_floor_rejectedTest passed 1 test(s)
+    ok negative_used_rejectedTest passed 1 test(s)
+    ok oversized_used_rejectedTest passed 1 test(s)
+
+  28 passing (6ms)
+
+  native_async_tests
+    ok immediateSameTaskDeliveryCommitTest passed 1 test(s)
+    ok immediateSameTaskDeliveryRollbackTest passed 1 test(s)
+    ok restoreAcceptedOutcomeAfterFailedLaterPollTest passed 1 test(s)
+    ok nestedFundingCommitsTest passed 1 test(s)
+    ok nestedOtherTaskControlCommitAndRollbackTest passed 1 test(s)
+    ok nestedFundingRollbackKeepsConsumedFeesTest passed 1 test(s)
+    ok nestedDeliveryCommitAndRollbackTest passed 1 test(s)
+    ok totalLiabilityOverflowRejectedTest passed 1 test(s)
+    ok sameTaskGuardAllOutcomesAndPostAttemptTest passed 1 test(s)
+    ok dueBoundariesRollbackNestedEffectsTest passed 1 test(s)
+    ok restoreRejectsInvalidWaitAndFlightTest passed 1 test(s)
+    ok registrationTest passed 1 test(s)
+    ok contributorCannotResumeTest passed 1 test(s)
+    ok zeroPriceFlightGuardTest passed 1 test(s)
+    ok acceptedInboxSurvivesFailedPollTest passed 1 test(s)
+    ok acceptedResultBeatsDeadlineTest passed 1 test(s)
+    ok duplicateHeightPollRejectedTest passed 1 test(s)
+    ok maturedWaitPricePauseResumeTest passed 1 test(s)
+    ok expiryBoundaryWaitRejectedTest passed 1 test(s)
+    ok restoreMetadataRejectedTest passed 1 test(s)
+    ok restoreNextStepTest passed 1 test(s)
+    ok visitCapContentionTest passed 1 test(s)
+    ok fixedContractRoundRobinTest passed 1 test(s)
+    ok graceAgeSurvivesPolicyEditTest passed 1 test(s)
+    ok leaseExtensionPaysStorageTest passed 1 test(s)
+    ok applicationFailureCommitsAndRefundsTest passed 1 test(s)
+    ok generationMetadataRejectedTest passed 1 test(s)
+    ok blockStartPriceAndUpdateTest passed 1 test(s)
+    ok fixedPriceDoesNotUpdateTest passed 1 test(s)
+    ok expiredTaskCannotPollTest passed 1 test(s)
+    ok expiredOversizedAuctionSettlesTest passed 1 test(s)
+    ok expiredFixedInsufficientGasPreservesRingTest passed 1 test(s)
+    ok auctionPendingReservesDueSlotTest passed 1 test(s)
+    ok delayedAuctionPromotionPreservesGraceTest passed 1 test(s)
+    ok reverseMaintenancePreservesAuctionFifoTest passed 1 test(s)
+    ok equalBidEarlierReadinessBeatsSequenceTest passed 1 test(s)
+    ok restoredDelayedWaitPreservesAuctionSuccessorTest passed 1 test(s)
+    ok delayedFixedPromotionAllocatesCurrentSlotTest passed 1 test(s)
+    ok corruptAccountingRestoreRejectedTest passed 1 test(s)
+    ok acceptedInboxConsumedOnceTest passed 1 test(s)
+    ok unexpiredOperationTimeoutTest passed 1 test(s)
+    ok pricedOutInspectionDoesNotPollTest passed 1 test(s)
+    ok prunedIdentityCannotBeReusedTest passed 1 test(s)
+    ok restartRebuildsQueueAndRingSuccessorTest passed 1 test(s)
+    ok restartDiscardsExecutionCacheTest passed 1 test(s)
+    ok omittedReconstructionLosesRunnableSuccessorTest passed 1 test(s)
+    ok missingDurableRingRejectedTest passed 1 test(s)
+    ok midBlockCheckpointRejectedTest passed 1 test(s)
+
+  48 passing (164ms)
+
+  service_waits_tests
+    ok startAndAdmissionTest passed 1 test(s)
+    ok wrongSenderAndStaleSequenceTest passed 1 test(s)
+    ok duplicateResponseAndStaleExpireTest passed 1 test(s)
+    ok deadlineIsNotCancellationTest passed 1 test(s)
+    ok remoteErrorCommitsTest passed 1 test(s)
+    ok applicationFailureCommitsWriteTest passed 1 test(s)
+    ok callbackAbortAndRetryTest passed 1 test(s)
+    ok emptyTrackingAcceptedTest passed 1 test(s)
+    ok reusedOrderDoesNotReuseWorkflowIdentityTest passed 1 test(s)
+    ok ambiguousDriverRestartNeverRebroadcastsTest passed 1 test(s)
+    ok crashBeforeBroadcastBlocksSafelyTest passed 1 test(s)
+    ok hashedJournalRequiresConfirmedReceiptTest passed 1 test(s)
+    ok driverScopeAndCheckTxTest passed 1 test(s)
+    ok boundBeginAndPermanentTombstoneTest passed 1 test(s)
+    ok driverRediscoveryChoosesExpireThenPruneTest passed 1 test(s)
+    ok requestIdsOrderEachServiceQueueTest passed 1 test(s)
+
+  16 passing (18ms)
+
+  ibc_waits_tests
+    ok channelBindingAndStartTest passed 1 test(s)
+    ok hostAuthenticationAndSelfSenderTest passed 1 test(s)
+    ok packetCorrelationRejectsWrongEndpointsDataTimeoutTest passed 1 test(s)
+    ok packetSequenceIsHostNotAdapterCheckTest passed 1 test(s)
+    ok duplicateAckAndStaleSequenceTest passed 1 test(s)
+    ok callbackAbortRetainsHostAndContractStateTest passed 1 test(s)
+    ok localDeadlineOverridesSuccessTest passed 1 test(s)
+    ok earlyRemoteTimeoutLeavesWaitingWithoutPendingTest passed 1 test(s)
+    ok localExpiryDoesNotCancelRemotePacketTest passed 1 test(s)
+    ok remoteAndInvalidAckAreCommittedFailuresTest passed 1 test(s)
+    ok closureRetainsWaitAndRefusesNewSendsTest passed 1 test(s)
+    ok restartPreservesPendingAndNextSuccessorTest passed 1 test(s)
+    ok authenticatedPeerCanLieTest passed 1 test(s)
+    ok authenticatedTimeoutAtLocalDeadlineTest passed 1 test(s)
+
+  14 passing (16ms)
+
+  native_batch_auction_tests
+    ok underfullReserveTest passed 1 test(s)
+    ok exactDemandReserveTest passed 1 test(s)
+    ok marginalDustCommitOrderTest passed 1 test(s)
+    ok standardBookDustOutsideFiniteProfileTest passed 1 test(s)
+    ok unrevealedRefundTest passed 1 test(s)
+    ok frozenBookTest passed 1 test(s)
+    ok boundedItemsAndOnePollPerHeightTest passed 1 test(s)
+    ok lockedAndRepeatedClaimsTest passed 1 test(s)
+    ok twoCoinClaimFailureTest passed 1 test(s)
+    ok partialWriteRollbackTest passed 1 test(s)
+    ok injectedFailureStopsAfterFirstItemTest passed 1 test(s)
+    ok finalizeBoundaryTest passed 1 test(s)
+    ok abortEveryPhaseAndFinalizedNeverAbortsTest passed 1 test(s)
+    ok hostPrunedClaimsTest passed 1 test(s)
+    ok restartSuccessorsAndClaimFlagsTest passed 1 test(s)
+
+  15 passing (58ms)
+
+  native_batch_auction_profiles
+    ok settlementWitnessTest passed 1 test(s)
+    ok abortWitnessTest passed 1 test(s)
+    ok rollbackWitnessTest passed 1 test(s)
+    ok restartWitnessTest passed 1 test(s)
+
+  4 passing (15ms)
+✔ required auction witness counts reject zero, missing, and malformed results (1.803875ms)
+✔ all five auction mutations fail with exact diagnostics and retained ITF evidence (4749.462833ms)
+✔ missing CLI makes the unified runner fail before any success summary (164.877834ms)
+✔ invalid model fails as a positive check (379.116ms)
+✔ a genuine invariant failure fails a positive check (381.632709ms)
+✔ a parser error cannot satisfy an expected invariant counterexample (331.978917ms)
+✔ expected invariant and assertion controls require their real diagnostics (670.175167ms)
+✔ a successful process containing a diagnostic does not satisfy a negative control (0.187792ms)
+✔ an unrelated CLI error cannot hide behind an expected counterexample diagnostic (0.128833ms)
+✔ a Node permission error cannot hide behind an expected negative diagnostic (0.193417ms)
+✔ explicit extended mode fails when its server is unavailable (344.601042ms)
+✔ unknown runner options fail instead of silently running another mode (112.323167ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7268.257208
+
+> cosmwasm-durable-async-formal@0.0.0 verify
+> bash verify.sh
+
+Quint 0.33.0; Node v26.11.1; TypeScript evaluator
+parse/typecheck pricing.qnt: passed
+parse/typecheck pricing_tests.qnt: passed
+parse/typecheck native_async.qnt: passed
+parse/typecheck native_async_tests.qnt: passed
+parse/typecheck native_profiles.qnt: passed
+parse/typecheck service_waits.qnt: passed
+parse/typecheck service_waits_tests.qnt: passed
+parse/typecheck ibc_waits.qnt: passed
+parse/typecheck ibc_waits_tests.qnt: passed
+parse/typecheck native_batch_auction.qnt: passed
+parse/typecheck native_batch_auction_tests.qnt: passed
+parse/typecheck native_batch_auction_profiles.qnt: passed
+
+  pricing_tests
+    ok fullTest passed 1 test(s)
+    ok emptyTest passed 1 test(s)
+    ok at_targetTest passed 1 test(s)
+    ok floor_clampTest passed 1 test(s)
+    ok sub_atomic_stepTest passed 1 test(s)
+    ok truncationTest passed 1 test(s)
+    ok saturateTest passed 1 test(s)
+    ok charge_zero_gasTest passed 1 test(s)
+    ok charge_zero_priceTest passed 1 test(s)
+    ok charge_one_atomicTest passed 1 test(s)
+    ok charge_one_unitTest passed 1 test(s)
+    ok charge_round_upTest passed 1 test(s)
+    ok charge_max_priceTest passed 1 test(s)
+    ok charge_max_widthTest passed 1 test(s)
+    ok target_zero_rejectedTest passed 1 test(s)
+    ok denominator_zero_rejectedTest passed 1 test(s)
+    ok valid_price_domainTest passed 1 test(s)
+    ok negative_base_rejectedTest passed 1 test(s)
+    ok oversized_price_rejectedTest passed 1 test(s)
+    ok charge_overflow_rejectedTest passed 1 test(s)
+    ok charge_valid_domainTest passed 1 test(s)
+    ok negative_gas_rejectedTest passed 1 test(s)
+    ok oversized_gas_rejectedTest passed 1 test(s)
+    ok negative_price_rejectedTest passed 1 test(s)
+    ok oversized_fee_price_rejectedTest passed 1 test(s)
+    ok negative_floor_rejectedTest passed 1 test(s)
+    ok negative_used_rejectedTest passed 1 test(s)
+    ok oversized_used_rejectedTest passed 1 test(s)
+
+  28 passing (3ms)
+
+  native_async_tests
+    ok immediateSameTaskDeliveryCommitTest passed 1 test(s)
+    ok immediateSameTaskDeliveryRollbackTest passed 1 test(s)
+    ok restoreAcceptedOutcomeAfterFailedLaterPollTest passed 1 test(s)
+    ok nestedFundingCommitsTest passed 1 test(s)
+    ok nestedOtherTaskControlCommitAndRollbackTest passed 1 test(s)
+    ok nestedFundingRollbackKeepsConsumedFeesTest passed 1 test(s)
+    ok nestedDeliveryCommitAndRollbackTest passed 1 test(s)
+    ok totalLiabilityOverflowRejectedTest passed 1 test(s)
+    ok sameTaskGuardAllOutcomesAndPostAttemptTest passed 1 test(s)
+    ok dueBoundariesRollbackNestedEffectsTest passed 1 test(s)
+    ok restoreRejectsInvalidWaitAndFlightTest passed 1 test(s)
+    ok registrationTest passed 1 test(s)
+    ok contributorCannotResumeTest passed 1 test(s)
+    ok zeroPriceFlightGuardTest passed 1 test(s)
+    ok acceptedInboxSurvivesFailedPollTest passed 1 test(s)
+    ok acceptedResultBeatsDeadlineTest passed 1 test(s)
+    ok duplicateHeightPollRejectedTest passed 1 test(s)
+    ok maturedWaitPricePauseResumeTest passed 1 test(s)
+    ok expiryBoundaryWaitRejectedTest passed 1 test(s)
+    ok restoreMetadataRejectedTest passed 1 test(s)
+    ok restoreNextStepTest passed 1 test(s)
+    ok visitCapContentionTest passed 1 test(s)
+    ok fixedContractRoundRobinTest passed 1 test(s)
+    ok graceAgeSurvivesPolicyEditTest passed 1 test(s)
+    ok leaseExtensionPaysStorageTest passed 1 test(s)
+    ok applicationFailureCommitsAndRefundsTest passed 1 test(s)
+    ok generationMetadataRejectedTest passed 1 test(s)
+    ok blockStartPriceAndUpdateTest passed 1 test(s)
+    ok fixedPriceDoesNotUpdateTest passed 1 test(s)
+    ok expiredTaskCannotPollTest passed 1 test(s)
+    ok expiredOversizedAuctionSettlesTest passed 1 test(s)
+    ok expiredFixedInsufficientGasPreservesRingTest passed 1 test(s)
+    ok auctionPendingReservesDueSlotTest passed 1 test(s)
+    ok delayedAuctionPromotionPreservesGraceTest passed 1 test(s)
+    ok reverseMaintenancePreservesAuctionFifoTest passed 1 test(s)
+    ok equalBidEarlierReadinessBeatsSequenceTest passed 1 test(s)
+    ok restoredDelayedWaitPreservesAuctionSuccessorTest passed 1 test(s)
+    ok delayedFixedPromotionAllocatesCurrentSlotTest passed 1 test(s)
+    ok corruptAccountingRestoreRejectedTest passed 1 test(s)
+    ok acceptedInboxConsumedOnceTest passed 1 test(s)
+    ok unexpiredOperationTimeoutTest passed 1 test(s)
+    ok pricedOutInspectionDoesNotPollTest passed 1 test(s)
+    ok prunedIdentityCannotBeReusedTest passed 1 test(s)
+    ok restartRebuildsQueueAndRingSuccessorTest passed 1 test(s)
+    ok restartDiscardsExecutionCacheTest passed 1 test(s)
+    ok omittedReconstructionLosesRunnableSuccessorTest passed 1 test(s)
+    ok missingDurableRingRejectedTest passed 1 test(s)
+    ok midBlockCheckpointRejectedTest passed 1 test(s)
+
+  48 passing (95ms)
+
+  service_waits_tests
+    ok startAndAdmissionTest passed 1 test(s)
+    ok wrongSenderAndStaleSequenceTest passed 1 test(s)
+    ok duplicateResponseAndStaleExpireTest passed 1 test(s)
+    ok deadlineIsNotCancellationTest passed 1 test(s)
+    ok remoteErrorCommitsTest passed 1 test(s)
+    ok applicationFailureCommitsWriteTest passed 1 test(s)
+    ok callbackAbortAndRetryTest passed 1 test(s)
+    ok emptyTrackingAcceptedTest passed 1 test(s)
+    ok reusedOrderDoesNotReuseWorkflowIdentityTest passed 1 test(s)
+    ok ambiguousDriverRestartNeverRebroadcastsTest passed 1 test(s)
+    ok crashBeforeBroadcastBlocksSafelyTest passed 1 test(s)
+    ok hashedJournalRequiresConfirmedReceiptTest passed 1 test(s)
+    ok driverScopeAndCheckTxTest passed 1 test(s)
+    ok boundBeginAndPermanentTombstoneTest passed 1 test(s)
+    ok driverRediscoveryChoosesExpireThenPruneTest passed 1 test(s)
+    ok requestIdsOrderEachServiceQueueTest passed 1 test(s)
+
+  16 passing (11ms)
+
+  ibc_waits_tests
+    ok channelBindingAndStartTest passed 1 test(s)
+    ok hostAuthenticationAndSelfSenderTest passed 1 test(s)
+    ok packetCorrelationRejectsWrongEndpointsDataTimeoutTest passed 1 test(s)
+    ok packetSequenceIsHostNotAdapterCheckTest passed 1 test(s)
+    ok duplicateAckAndStaleSequenceTest passed 1 test(s)
+    ok callbackAbortRetainsHostAndContractStateTest passed 1 test(s)
+    ok localDeadlineOverridesSuccessTest passed 1 test(s)
+    ok earlyRemoteTimeoutLeavesWaitingWithoutPendingTest passed 1 test(s)
+    ok localExpiryDoesNotCancelRemotePacketTest passed 1 test(s)
+    ok remoteAndInvalidAckAreCommittedFailuresTest passed 1 test(s)
+    ok closureRetainsWaitAndRefusesNewSendsTest passed 1 test(s)
+    ok restartPreservesPendingAndNextSuccessorTest passed 1 test(s)
+    ok authenticatedPeerCanLieTest passed 1 test(s)
+    ok authenticatedTimeoutAtLocalDeadlineTest passed 1 test(s)
+
+  14 passing (12ms)
+
+  native_batch_auction_tests
+    ok underfullReserveTest passed 1 test(s)
+    ok exactDemandReserveTest passed 1 test(s)
+    ok marginalDustCommitOrderTest passed 1 test(s)
+    ok standardBookDustOutsideFiniteProfileTest passed 1 test(s)
+    ok unrevealedRefundTest passed 1 test(s)
+    ok frozenBookTest passed 1 test(s)
+    ok boundedItemsAndOnePollPerHeightTest passed 1 test(s)
+    ok lockedAndRepeatedClaimsTest passed 1 test(s)
+    ok twoCoinClaimFailureTest passed 1 test(s)
+    ok partialWriteRollbackTest passed 1 test(s)
+    ok injectedFailureStopsAfterFirstItemTest passed 1 test(s)
+    ok finalizeBoundaryTest passed 1 test(s)
+    ok abortEveryPhaseAndFinalizedNeverAbortsTest passed 1 test(s)
+    ok hostPrunedClaimsTest passed 1 test(s)
+    ok restartSuccessorsAndClaimFlagsTest passed 1 test(s)
+
+  15 passing (53ms)
+
+  native_batch_auction_profiles
+    ok settlementWitnessTest passed 1 test(s)
+    ok abortWitnessTest passed 1 test(s)
+    ok rollbackWitnessTest passed 1 test(s)
+    ok restartWitnessTest passed 1 test(s)
+
+  4 passing (14ms)
+simulate native_profiles.qnt  seed=20261012 samples=1000 depth=80
+[ok] No violation found (7691ms at 130 traces/second).
+Witnesses:
+sawPoll was witnessed in 514 trace(s) out of 1000 explored (51.40%)
+sawAccepted was witnessed in 7 trace(s) out of 1000 explored (0.70%)
+sawRollback was witnessed in 88 trace(s) out of 1000 explored (8.80%)
+Use --seed=0x1352894 --backend=typescript to reproduce.
+simulate native_profiles.qnt --init=fixedInit seed=20261013 samples=500 depth=80
+[ok] No violation found (4485ms at 111 traces/second).
+Witnesses:
+sawPoll was witnessed in 250 trace(s) out of 500 explored (50.00%)
+sawAccepted was witnessed in 0 trace(s) out of 500 explored (0.00%)
+sawRollback was witnessed in 46 trace(s) out of 500 explored (9.20%)
+Use --seed=0x1352895 --backend=typescript to reproduce.
+simulate service_waits.qnt  seed=20261014 samples=500 depth=80
+[ok] No violation found (2473ms at 202 traces/second).
+Witnesses:
+sawAccepted was witnessed in 136 trace(s) out of 500 explored (27.20%)
+sawRollback was witnessed in 165 trace(s) out of 500 explored (33.00%)
+sawRestart was witnessed in 497 trace(s) out of 500 explored (99.40%)
+sawAmbiguous was witnessed in 191 trace(s) out of 500 explored (38.20%)
+Use --seed=0x1352896 --backend=typescript to reproduce.
+simulate ibc_waits.qnt  seed=20261015 samples=500 depth=80
+[ok] No violation found (1490ms at 336 traces/second).
+Witnesses:
+sawAccepted was witnessed in 57 trace(s) out of 500 explored (11.40%)
+sawRollback was witnessed in 81 trace(s) out of 500 explored (16.20%)
+sawRestart was witnessed in 500 trace(s) out of 500 explored (100.00%)
+sawEarlyTimeout was witnessed in 26 trace(s) out of 500 explored (5.20%)
+Use --seed=0x1352897 --backend=typescript to reproduce.
+simulate native_batch_auction_profiles.qnt seed=20261015 samples=1000 depth=160
+[ok] No violation found (10491ms at 95 traces/second).
+Witnesses:
+sawSettlement was witnessed in 431 trace(s) out of 1000 explored (43.10%)
+sawAbort was witnessed in 1 trace(s) out of 1000 explored (0.10%)
+sawRollback was witnessed in 788 trace(s) out of 1000 explored (78.80%)
+sawRestart was witnessed in 1000 trace(s) out of 1000 explored (100.00%)
+Use --seed=0x1352897 --backend=typescript to reproduce.
+negative pricing: expected QNT508 assertion failure (exit 1)
+negative native-flight: expected invariant violation (exit 1)
+negative native-restore: expected invariant violation (exit 1)
+negative service-sequence: expected invariant violation (exit 1)
+negative ibc-host: expected invariant violation (exit 1)
+negative ibc-data: expected invariant violation (exit 1)
+negative auction-provisional: expected invariant violation (exit 1)
+negative auction-repeated: expected invariant violation (exit 1)
+negative auction-expiry: expected invariant violation (exit 1)
+negative auction-rollback: expected invariant violation (exit 1)
+negative auction-flags: expected invariant violation (exit 1)
+portable checks passed: 12 files, 6 deterministic suites, 5 simulations, 11 negative controls; ITF: /private/tmp/auction-quint.YQsVEF
+extended backend: NOT RUN (portable mode; no symbolic or exhaustive proof)

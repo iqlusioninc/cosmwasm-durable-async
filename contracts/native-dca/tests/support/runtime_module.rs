@@ -132,6 +132,7 @@ impl Module for RuntimeModule {
         QueryC: CustomQuery + DeserializeOwned + 'static,
     {
         let report = self.runtime.run_block(
+            api,
             storage,
             block.height,
             &mut RouterPollHost {

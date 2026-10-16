@@ -1,0 +1,18 @@
+Regression for retained accepted outcome with due == last after later failed poll (exit 1).
+
+  native_async_tests
+    1) restoreAcceptedOutcomeAfterFailedLaterPollTest failed after 1 test(s)
+
+  1 failed
+
+  1) restoreAcceptedOutcomeAfterFailedLaterPollTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_async_tests.qnt:11:5
+        11:     assert(saved.tasks.get(1).last == 2 and saved.tasks.get(1).due == 2 and checkpointValid(saved))
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=restoreAcceptedOutcomeAfterFailedLaterPollTest to repeat.
+
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_async_tests.qnt
+error: Tests failed

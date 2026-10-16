@@ -336,6 +336,88 @@ fn overflow_deposit_and_invalid_initial_split_leave_balances_unchanged() {
     assert_eq!(s.balance(&s.sponsor), 10_000);
 }
 
+// Omitting reserved liability from the preflight admits a deposit that cannot
+// be reunited with the reservation when an attempt settles.
+#[test]
+fn reserved_liability_overflow_rejects_before_bank_movement() {
+    let api = testing::MockApi::default();
+    let mut storage = testing::MockStorage::new();
+    let contract = api.addr_make("contract");
+    let keeper = host::Keeper {
+        config: FundingConfig {
+            denom: "ugas".into(),
+            gas_price: Decimal::one(),
+            min_base_price: Decimal::one(),
+            target_gas: 60,
+            price_grace_blocks: 3,
+            last_block_poll_gas_used: 0,
+            max_gas_per_poll: 100,
+            max_lifetime_blocks: 100,
+        },
+        escrow: api.addr_make("escrow"),
+    };
+    keeper
+        .execute(
+            &api,
+            &mut storage,
+            1,
+            &contract,
+            SchedulerMsg::RegisterTask {
+                control: contract.to_string(),
+                refund: contract.to_string(),
+                gas_per_poll: 40,
+                max_gas_price: Decimal::one(),
+                expires_at: 20,
+                funds: coin(1000, "ugas"),
+            },
+            |_, _, _, _| Ok(()),
+        )
+        .unwrap();
+    let key = [
+        b"native-async/v1/task/".as_slice(),
+        contract.as_bytes(),
+        b"/",
+        &1u64.to_be_bytes(),
+    ]
+    .concat();
+    let mut task: TaskFunding = from_json(storage.get(&key).unwrap()).unwrap();
+    // State during a 40-unit reservation: available+reserved is exactly MAX.
+    task.available = Uint128::new(u128::MAX - 40);
+    task.reserved = Uint128::new(40);
+    storage.set(&key, &to_json_vec(&task).unwrap());
+    let before: Vec<_> = storage.range(None, None, Order::Ascending).collect();
+    let mut bank_moved = false;
+    let result = keeper.execute(
+        &api,
+        &mut storage,
+        2,
+        &contract,
+        SchedulerMsg::FundTask {
+            task_id: 1,
+            contributor: contract.to_string(),
+            funds: coin(1, "ugas"),
+        },
+        |_, _, _, _| {
+            bank_moved = true;
+            Ok(())
+        },
+    );
+    assert!(
+        result.is_err(),
+        "available+reserved+deposit must fit Uint128"
+    );
+    assert!(
+        !bank_moved,
+        "overflow must be rejected before the bank is called"
+    );
+    assert_eq!(
+        before,
+        storage
+            .range(None, None, Order::Ascending)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn management_calls_reject_attached_funds_and_price_limit_blocks_resume() {
     let mut s = Suite::new();

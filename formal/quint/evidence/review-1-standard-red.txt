@@ -1,0 +1,50 @@
+Exact Task 3 standard book introduced before parameterized instance support.
+Command: quint test native_batch_auction_tests.qnt --backend=typescript --seed=1 --max-samples=1 --match=exactStandardBookWithUnrevealedBidTest
+No-op initialFor using original three-bid instance: exit 1.
+
+  native_batch_auction_tests
+    1) exactStandardBookWithUnrevealedBidTest failed after 1 test(s)
+
+  1 failed
+
+  1) exactStandardBookWithUnrevealedBidTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:40:55
+        40:     if (not(configured.book.bids.keys().contains(5))) assert(false) else {
+                                                                  ^^^^^^^^^^^^^
+    Use --seed=0x1 --match=exactStandardBookWithUnrevealedBidTest to repeat.
+
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_batch_auction_tests.qnt
+error: Tests failed
+After adding address-class capacity, but before honoring reserve/lot size: exit 1 at literal allocation/payout assertions.
+
+  native_batch_auction_tests
+    1) exactStandardBookWithUnrevealedBidTest failed after 1 test(s)
+
+  1 failed
+
+  1) exactStandardBookWithUnrevealedBidTest:
+       Error [QNT508]: Assertion failed
+        at /private/tmp/auction-formal.00Ky3u/formal/quint/native_batch_auction_tests.qnt:48:7
+        48:       assert(f.book.phase == "Finalized" and f.book.price == 3 and f.collateral == 29 and
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        49:         List(1, 2, 3, 4, 5).foldl(List(), (xs, id) => xs.append(f.book.bids.get(id).allocation)) == List(2, 2, 1, 0, 0) and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        50:         List(1, 2, 3, 4, 5).foldl(List(), (xs, id) => xs.append(f.book.bids.get(id).refund)) == List(2, 0, 3, 2, 7) and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        51:         List(1, 2, 3, 4, 5).foldl(List(), (xs, id) => xs.append(f.book.bids.get(id).sale)) == List(20, 20, 10, 0, 0) and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        52:         f.book.proceeds == 15 and not(f.book.bids.get(5).revealed) and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        53:         paid.quotePaid.get(0) == 15 and paid.salePaid.get(0) == 0 and
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        54:         paid.saleBank == 0 and paid.quoteBank == 0 and safe(f) and safe(paid))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use --seed=0x1 --match=exactStandardBookWithUnrevealedBidTest to repeat.
+
+
+  Use --verbosity=3 to show executions.
+  Further debug with: quint test --verbosity=3 native_batch_auction_tests.qnt
+error: Tests failed

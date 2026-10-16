@@ -45,6 +45,10 @@ The documentation checkout is `/private/tmp/cosmwasm-async-suite.4ry5fN`, branch
 and the published DCA branch. At execution, use the worktree skill to verify
 isolation and choose the implementation branch without discarding these docs.
 
+The actual approved plan base used for execution and the separate clean local
+handoff is `eb2bf5aac63fdb714e68b871b49da8dc3c798e7c` on
+`docs/async-showcase-suite`; the design-only identity above remains historical.
+
 Recommend task agents with independent task reviews and one whole-change review.
 Use `gpt-6.1-sol` high reasoning for implementation, medium for bounded scripts/docs,
 and `gpt-6-astra` high reasoning for custody/runtime/formal review if still
@@ -56,15 +60,32 @@ Task 8 can proceed after 2+3 with final source correspondence checked after 5;
 Task 9 follows 6+7+8. One controller owns Cargo manifests/lockfile changes and
 shared Go helper integration. Do not have concurrent agents edit the same file.
 
-- [ ] Record source/PR heads, `git status --short`, Rust/Go/Node/npm versions, and
+- [x] Record source/PR heads, `git status --short`, Rust/Go/Node/npm versions, and
   available disk space. Use fresh task-specific target/cache directories created
   with `mktemp -d`; do not reuse a target directory being written by another branch.
-- [ ] Run baseline `cargo test --workspace --all-features --locked`,
+- [x] Run baseline `cargo test --workspace --all-features --locked`,
   `cargo fmt --all -- --check`, and
   `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`.
   Record unrelated failures separately. Do not change source merely to suppress them.
-- [ ] Build existing fulfill/DCA artifacts and bootstrap the pinned Go environment
+- [x] Build existing fulfill/DCA artifacts and bootstrap the pinned Go environment
   using the commands in Task 6. Preserve a fresh baseline log before runtime edits.
+
+Status reconciled 2026-10-15 against the controller's completed Tasks 1–9 and
+whole-branch review. Checked steps record observed local implementation and
+verification, including reviewed task-level fixes, rather than production
+readiness or a formal proof. Task 6 reused the pinned Go bootstrap established
+in preflight instead of repeating that cold setup. Task 9's existing generic
+journal/deadline/ownership helpers passed on their initial characterization;
+missing scenario/shell behavior and later safety mutations supplied separate
+RED/GREEN evidence, not an invented failure of those unchanged helpers.
+Task 8's existing same-task flight and initial overflow checks also passed its
+baseline; new cache/wait assertions supplied the documented model RED evidence.
+The reviewed Task 4 interface ruling uses `Present(Box<TaskResponse>)` to satisfy
+strict Clippy while preserving the specified Serde JSON shape.
+
+The Task 5 instrumentation/test name now says `distinct_record_keys` because its
+`BTreeSet` deduplicates repeated reads of a bid/tick key. The assertion bounds
+distinct records read per poll; it does not measure exact storage-read count.
 
 ## File map and task boundaries
 
@@ -103,7 +124,7 @@ Use reserved key prefix `na2/transient/flight/` and unambiguous identity encodin
 The marker is installed only in the per-attempt cache before `PollHost::poll`,
 visible through nested caches, and removed before a successful cache commit.
 
-- [ ] Add `zero_price_reentrant_controls_are_rejected` and
+- [x] Add `zero_price_reentrant_controls_are_rejected` and
   `nested_funding_preserves_reserved_liability` to the existing reentrant host
   fixture, testing all four controls and Pending/Yield/Complete/Fail responses.
 
@@ -118,22 +139,22 @@ assert_eq!(funding_after.available, available_before + deposit - paid);
 assert!(!storage_has_prefix(b"na2/transient/flight/"));
 ```
 
-- [ ] Run `cargo test -p native-async --features host --test runtime --locked`
+- [x] Run `cargo test -p native-async --features host --test runtime --locked`
   and `--test funding`; retain the semantic failures at zero price and at the
   available-plus-reserved overflow boundary before changing production code.
-- [ ] Add the marker checks to both `manage` and `update_policy`. Leave callback
+- [x] Add the marker checks to both `manage` and `update_policy`. Leave callback
   delivery and `FundTask` permitted. Preserve post-dispatch task/funding reloads.
   Change the keeper's deposit preflight to checked
   `available + reserved + deposit` before any transfer or write.
-- [ ] Extend tests for positive price, successful top-up, failed-dispatch top-up
+- [x] Extend tests for positive price, successful top-up, failed-dispatch top-up
   rollback, OOG, host error, management after the attempt, and untouched other-task
   indexes/leases. Inspect the full committed store for leaked markers after every
   successful and failed run. Add corresponding Go tests without replacing its
   existing context-only guard.
-- [ ] Run Rust runtime/funding tests and pinned Go
+- [x] Run Rust runtime/funding tests and pinned Go
   `go test -tags upstream -count=1 -run 'Test.*(Funding|InFlight)' .` from
   `integration/wasmd`; require the new named cases pass, not skip.
-- [ ] Commit the scoped change as
+- [x] Commit the scoped change as
   `fix: separate async flight identity from gas reservations`.
 
 ### Task 2: Align wait admission and restore policy across hosts
@@ -151,7 +172,7 @@ host: &mut impl PollHost) -> StdResult<BlockReport>`; thread the API through
 `validateResolver(raw string) (sdk.AccAddress, error)` parses using the configured
 chain policy and rejects when `parsed.String() != raw`. No JSON ABI changes.
 
-- [ ] Add a shared fixture with fields `name`, `height`, `expiry`, `kind`, `due`,
+- [x] Add a shared fixture with fields `name`, `height`, `expiry`, `kind`, `due`,
   `resolver`, `expected_accept`. For h=2/E=10, assert due 2,10,11 reject and 3,9
   accept for both timer and operation waits. Include canonical, mixed/upper-case,
   wrong-prefix, malformed and oversized addresses with the same configured prefix.
@@ -164,21 +185,21 @@ assert_eq!(rejected_case.outbound_effects, 0);
 assert_eq!(rejected_case.pause_reason, PauseReason::InvalidResponse);
 ```
 
-- [ ] Run the new Rust test before implementation and confirm current lease and
+- [x] Run the new Rust test before implementation and confirm current lease and
   resolver acceptance disagrees with the fixture. Run the Go fixture to identify
   any canonical-spelling gap independently.
-- [ ] Validate resolvers through `Api::addr_validate` plus exact textual equality;
+- [x] Validate resolvers through `Api::addr_validate` plus exact textual equality;
   require strict lower and upper due bounds. Replace permissive runtime-test
   resolver labels with real validated addresses. Do not rewrite illustrative
   encoding-only fixture strings or silently normalize user input.
-- [ ] Use the same Go helper in staging and restored operation-wait checks.
+- [x] Use the same Go helper in staging and restored operation-wait checks.
   Add restoration cases for invalid due/resolver and valid active v1 state. Keep
   configuration-specific address-length/prefix behavior explicit in fixture setup.
   A bad snapshot must fail closed; do not discard its offending wait to proceed.
-- [ ] Run `cargo test --workspace --all-features --locked` and pinned Go
+- [x] Run `cargo test --workspace --all-features --locked` and pinned Go
   `go test -tags upstream -count=1 -run 'Test.*(WaitAdmission|Snapshot|Restore)' .`.
   Review all changed `run_block` callers using `rg`; require all suites pass.
-- [ ] Commit as `fix: align native wait admission and restore validation`.
+- [x] Commit as `fix: align native wait admission and restore validation`.
 
 ### Task 3: Define auction protocol, checked allocation arithmetic and commitments
 
@@ -279,17 +300,17 @@ hex), and `newSalt() -> Buffer` (32 OS-random bytes). Its stdin JSON has
 parse amount/ID strings into BigInt, never Number; validate addresses consistently
 with the published vectors and rely on the contract for authoritative admission.
 
-- [ ] Add failing tests for all numeric limits, underfull/exact supply pricing,
+- [x] Add failing tests for all numeric limits, underfull/exact supply pricing,
   marginal allocation, checked narrowing, canonical commitment vectors and every
   domain field changing the digest. Pin `tick_count=256`, `max_bids=256`, `B=32`
   as valid boundaries and 257/257/33 as invalid; zero also rejects.
-- [ ] Run `cargo test -p native-batch-auction --test math --test commitment`
+- [x] Run `cargo test -p native-batch-auction --test math --test commitment`
   and `node --test scripts/auction-commitment.test.mjs` before implementation;
   distinguish missing behavior from dependency/environment failures.
-- [ ] Implement the frozen types, storage interfaces, arithmetic and independent
+- [x] Implement the frozen types, storage interfaces, arithmetic and independent
   Rust/Node encoders. Use spec-defined UTF-8 lengths and big-endian widths; add
   fixed expected byte/digest vectors, not just encoder roundtrip assertions.
-- [ ] Add an independent test-only one-shot clearing oracle that sorts a complete
+- [x] Add an independent test-only one-shot clearing oracle that sorts a complete
   book rather than sharing the incremental algorithm. The standard book is
   S=5, L=10, reserve=2, step=1, K=3; bids `(qty,tick,collateral)` are
   `(2,2,8),(2,1,6),(2,1,6),(1,0,2)` plus an unrevealed deposit of 7.
@@ -302,8 +323,8 @@ assert_eq!((seller_quote, seller_sale), (15, 0));
 assert_eq!(total_collateral, 29);
 ```
 
-- [ ] Run the package tests, Node vectors and formatting/clippy; require all pass.
-- [ ] Commit as `feat: define checked batch auction protocol and commitment encoding`.
+- [x] Run the package tests, Node vectors and formatting/clippy; require all pass.
+- [x] Commit as `feat: define checked batch auction protocol and commitment encoding`.
 
 ### Task 4: Implement admission, funding controls and principal claims
 
@@ -338,21 +359,21 @@ do not make auction tests include DCA business fixtures. Helpers:
 `RejectingBank` delegates to BankKeeper except for a storage-configured recipient
 and denom failure, allowing a second claim transfer to fail transactionally.
 
-- [ ] Add tests for create-once, exact funds including fee/sale coalescing,
+- [x] Add tests for create-once, exact funds including fee/sale coalescing,
   registration reply mismatch/rollback, commit/reveal boundary heights, duplicate
   identities, invalid reveals leaving buckets untouched, and principal conservation.
   Use creation=1/C=10/R=20/E=60 for the standard five-bid/B=1 fixture.
-- [ ] Run `cargo test -p native-batch-auction --test admission --test claims
+- [x] Run `cargo test -p native-batch-auction --test admission --test claims
   --all-features`; retain failing admission and claim assertions.
-- [ ] Implement seller/config binding, host funding-config validation, exact
+- [x] Implement seller/config binding, host funding-config validation, exact
   attached funds, checked counts/demand, commitment verification before writes,
   and task reply validation. Keep instantiate nonpayable and no migrate export.
   Validate raw control task IDs against the one saved ID.
-- [ ] Implement funding/control routes preserving actors. Cancel only when empty,
+- [x] Implement funding/control routes preserving actors. Cancel only when empty,
   atomically setting Aborted with host cancellation. Reject cancellation after
   any commitment, non-seller resume/budget changes, cap reductions after first
   commit, recipient changes and extra attached funds. Top-up does not resume.
-- [ ] Implement O(1) expiry abort/lazy abort, fixed-recipient claims, claim flags
+- [x] Implement O(1) expiry abort/lazy abort, fixed-recipient claims, claim flags
   and claimed totals. Ignore provisional entitlements in Aborted state; keep
   Finalized claims independent of host lifetime. Test finalized inputs through
   explicitly labeled fixture storage until Task 5 supplies the real finalizer.
@@ -366,17 +387,17 @@ assert_eq!(abort_refund, original_collateral);
 assert!(sponsor_resume.is_err());
 ```
 
-- [ ] Add donation, fee=quote and fee=sale, unknown/pruned host query, empty early
+- [x] Add donation, fee=quote and fee=sale, unknown/pruned host query, empty early
   cancellation race, permissionless immutable-recipient claim, duplicate claim,
   unrevealed refund, noncanonical beneficiary, and two-instance isolation cases.
   Keep all mutating/public execute routes nonpayable except Create/Commit/Fund.
-- [ ] Implement the bounded query routes. Add
+- [x] Implement the bounded query routes. Add
   `pagination_is_exclusive_bounded_and_complete`: default returns 16, limit 32
   returns at most 32, limits 0/33 reject, and repeated exclusive cursors visit all
   256 records once without duplicates. Query tests cover every BiddingPhase and
   preserve Finalized/Aborted business state when the host query is unavailable.
-- [ ] Run package tests and workspace regression/format checks; require all pass.
-- [ ] Commit as `feat: add auction custody admission and guarded claims`.
+- [x] Run package tests and workspace regression/format checks; require all pass.
+- [x] Commit as `feat: add auction custody admission and guarded claims`.
 
 ### Task 5: Implement bounded settlement and generated async execution
 
@@ -408,13 +429,13 @@ condition, not a legitimate committing application failure. This wrapper is
 essential: a helper's `?` otherwise lowers to `Transition::Failed` and can commit
 partial writes. Do not change the macro to implement this contract-specific policy.
 
-- [ ] Add `incremental_matches_oracle_for_every_batch_size`,
-  `one_phase_and_at_most_b_items_per_poll`, `claims_locked_during_every_phase`,
+- [x] Add `incremental_matches_oracle_for_every_batch_size`,
+  `one_phase_and_at_most_b_distinct_record_keys_per_poll`, `claims_locked_during_every_phase`,
   and `failed_batch_aborts_instead_of_committing_fail` before implementation.
   Compare the standard fixture against Task 3's independently calculated results.
 
 ```rust
-assert!(visited_items <= usize::from(batch_size));
+assert!(distinct_record_keys.len() <= usize::from(batch_size));
 assert_eq!(batch_after_error, batch_before);
 assert_eq!(contract_balances_after_error, balances_before);
 assert!(gas_fees_after_error >= gas_fees_before);
@@ -422,23 +443,23 @@ assert_eq!(final_allocations, vec![2, 2, 1, 0, 0]);
 assert_eq!(same_height_second_run.polls, 0);
 ```
 
-- [ ] Run `cargo test -p native-batch-auction --test workflow --test lifecycle
+- [x] Run `cargo test -p native-batch-auction --test workflow --test lifecycle
   --all-features`; observe missing settlement and atomicity failures.
-- [ ] Implement ScanPrice, AllocateBase, BuildClaims and O(1) Finalize as specified.
+- [x] Implement ScanPrice, AllocateBase, BuildClaims and O(1) Finalize as specified.
   Use a remaining-tick cursor to avoid unsigned underflow. The residual pass
   updates at most one lot per eligible marginal bid and constructs final claims;
   do not rescan prior records or recompute the whole book on resume.
-- [ ] Implement the generated loop, positive sleeps, strict deadline handling,
+- [x] Implement the generated loop, positive sleeps, strict deadline handling,
   task binding, sudo error conversion and no outbound payout messages. Measure
   maximum serialized workflow/checkpoint envelopes; admission reserves host metadata
   and bounded timer/result overhead, not the entire bid book.
-- [ ] Add interrupted-reconstruction tests at every phase and finalization boundary;
+- [x] Add interrupted-reconstruction tests at every phase and finalization boundary;
   OOG/trap/ordinary helper error after a nonempty prefix; unknown/inconsistent
   state; sold=0; exact supply; maximum-width values; paused gas; funding without
   resume; E-1 finalization/E abort; and claims after host pruning. Abort remains
   O(1) even with all 256 bids. Business records never disappear with host pruning.
-- [ ] Run the full package and workspace, strict clippy/format; require all pass.
-- [ ] Commit as `feat: execute bounded auction settlement on the native scheduler`.
+- [x] Run the full package and workspace, strict clippy/format; require all pass.
+- [x] Commit as `feat: execute bounded auction settlement on the native scheduler`.
 
 ### Task 6: Establish compiled-Wasm, gas and transaction-boundary evidence
 
@@ -455,16 +476,16 @@ with seller/bidders/sponsor and sale/quote/fee balances. Provide
 `(h *auctionAcceptanceHarness) block(t *testing.T, txs ...[]byte)
 *abci.ResponseFinalizeBlock`, and typed auction/bid/funding/balance queries.
 
-- [ ] Write `TestAuctionAcceptanceClearing`, `TestAuctionAcceptanceRollback`,
+- [x] Write `TestAuctionAcceptanceClearing`, `TestAuctionAcceptanceRollback`,
   `TestAuctionAcceptanceClaimsAtomic`, `TestAuctionAcceptanceFunding` and
   `TestAuctionAcceptanceDiskReopen`. Assert at least three nonempty batches,
   oracle allocations, real bank effects, no early claims, actual consumed-gas fees,
   and identical committed state after reopen.
-- [ ] Add the builder and test-only partial-write fault wrapper. The latter calls
+- [x] Add the builder and test-only partial-write fault wrapper. The latter calls
   real auction sudo then deliberately errors/traps for a selected test mode,
   so rollback is checked after real writes. Keep all fault controls out of the
   normal artifact and outside production workflow semantics.
-- [ ] Build all artifacts and bootstrap the pinned environment:
+- [x] Build all artifacts and bootstrap the pinned environment:
 
 ```sh
 bash contracts/native-fulfill/build-wasmd.sh
@@ -478,16 +499,16 @@ NATIVE_ASYNC_KEEP=1 bash integration/wasmd/test.sh
   Retain the printed actual `GOWORK`; export it explicitly with
   `GOPATH=$NATIVE_ASYNC_GOPATH` and `GOCACHE=$NATIVE_ASYNC_GOCACHE` for targeted runs.
   Do not invent an old temporary workspace path. These caches consume several GB.
-- [ ] In `integration/wasmd`, run
+- [x] In `integration/wasmd`, run
   `GOTOOLCHAIN=go1.23.6 go test -tags upstream -count=1 -run '^TestAuctionAcceptance' .`.
   Set up baseline failing cases before filling in scenario bodies. A missing
   artifact, skip or toolchain failure is not a passed behavior check.
-- [ ] Derive deposits from the actual host's rent/allocation/attempt requirements;
+- [x] Derive deposits from the actual host's rent/allocation/attempt requirements;
   record measured per-phase caps. Test price ceiling recovery with a ceiling
   increase, not top-up alone. Check zero-price flight exclusion separately using
   the native funding callback fixtures and measured host behavior.
-- [ ] Run the full pinned Go suite plus artifact hash checks; require all pass.
-- [ ] Commit as `test: validate batch auction in the pinned Wasm host`.
+- [x] Run the full pinned Go suite plus artifact hash checks; require all pass.
+- [x] Commit as `test: validate batch auction in the pinned Wasm host`.
 
 ### Task 7: Prove process-restart and network-state-sync recovery
 
@@ -501,18 +522,18 @@ enabled by `NATIVE_AUCTION_NETWORK_TEST=1`. Give children a distinct
 `-test.run=^TestStateSyncNetwork$` accidentally invoking auction setup. Use
 persisted commit gates to capture exact partial/finalized heights.
 
-- [ ] Write failing scenarios for restart after a nonempty AllocateBase or
+- [x] Write failing scenarios for restart after a nonempty AllocateBase or
   BuildClaims batch, and after Finalized before any claim. A new child process
   must open the same home, verify PID-bound pre-handshake evidence, then resume.
-- [ ] Implement the owned-child/gated restart pattern from the DCA demo. Compare
+- [x] Implement the owned-child/gated restart pattern from the DCA demo. Compare
   task/funding/checkpoint, auction/cursor/bid records and bank balances before
   allowing the next block. Database reopen within the same process is not this test.
-- [ ] Write/implement a three-process snapshot network: validator, independent
+- [x] Write/implement a three-process snapshot network: validator, independent
   snapshot-serving peer and empty joiner. Select partial-settlement and
   finalized-unclaimed snapshots; verify trusted RPC height/hash, restored marker,
   earliest block evidence and matching application state. Do not bypass a failed
   restore by deleting activation markers or reusing untrusted node data.
-- [ ] Continue the restored network and uninterrupted control to matching finalized
+- [x] Continue the restored network and uninterrupted control to matching finalized
   allocations and claimed balances. Include host-pruned claim persistence and
   rejected invalid wait state. Go's context-only guard and zero committed
   reservations remain distinct from Task 1's Rust marker/export assertion.
@@ -527,13 +548,13 @@ require.Equal(t, control.Claims, joined.Claims)
 require.Equal(t, control.Balances, joined.Balances)
 ```
 
-- [ ] Run in the prepared workspace:
+- [x] Run in the prepared workspace:
   `GOTOOLCHAIN=go1.23.6 NATIVE_AUCTION_NETWORK_TEST=1 go test -tags upstream
   -count=1 -timeout 10m -run '^TestAuction(ProcessRestart|StateSync)$' .`, then
   rerun existing `TestStateSyncNetwork` with `NATIVE_ASYNC_NETWORK_TEST=1`.
   Use per-RPC and overall deadlines; clean up only owned processes.
-- [ ] Record exact source/artifact/snapshot identities and outcomes.
-- [ ] Commit as `test: verify auction restart and state sync with retained claims`.
+- [x] Record exact source/artifact/snapshot identities and outcomes.
+- [x] Commit as `test: verify auction restart and state sync with retained claims`.
 
 ### Task 8: Integrate and extend the Quint models
 
@@ -551,33 +572,33 @@ explicit guest transaction snapshot/cache so successful nested funding/delivery
 and independently authorized other-task control are representable. The imported
 model currently excludes these; do not claim its old flight flag proves N1 fixed.
 
-- [ ] Record import provenance, run its unchanged portable baseline, and retain
+- [x] Record import provenance, run its unchanged portable baseline, and retain
   historical results as historical. From `formal/quint`: `npm ci`,
   `npm run parse`, `npm run typecheck`, `npm test`, `npm run verify`.
   Record Node/npm versions; the README's observed versions are not enforced pins.
-- [ ] Add native deterministic tests for zero-price same-task management rejection
+- [x] Add native deterministic tests for zero-price same-task management rejection
   across outcomes, allowed unrelated-task management, nested funding commit and
   rollback, total-liability overflow rejection, post-attempt control, strict due
   boundaries and restore without flight markers. Make assertions fail before
   extending the abstraction. Addresses are modeled classes, not a Bech32 proof.
-- [ ] Implement native guest-cache commit/abort with consumed fees outside rollback.
+- [x] Implement native guest-cache commit/abort with consumed fees outside rollback.
   Keep both fixed and auction scheduling profiles and their existing checks.
   Source-map each new transition to Tasks 1/2 tests and document abstraction limits.
-- [ ] Add auction deterministic tests for reserve pricing (D<S and D=S), marginal
+- [x] Add auction deterministic tests for reserve pricing (D<S and D=S), marginal
   dust, unrevealed refunds, frozen books, item bounds, locked/repeated claims,
   two-coin claim failure, partial-write rollback, finalize E-1/reject E, abort in
   every phase, finalized-never-aborts, host-pruned claims and restart successors.
-- [ ] Use three bidders/ticks, supply and quantities 1..3, collateral 1..12, B=1..2,
+- [x] Use three bidders/ticks, supply and quantities 1..3, collateral 1..12, B=1..2,
   C=2/R=4/E=20 and heights 0..21 for the first finite profile; filter invalid
   bids normally. E=20 satisfies the spec's worst-case margin at these bounds.
   Keep the larger standard-book dust case as a separate deterministic fixture.
   Model immutable recipients, principal separate from gas, claim flags, provisional
   allocations, cursors and full rollback snapshots.
-- [ ] Add five mutation controls: provisional claims, repeated claims,
+- [x] Add five mutation controls: provisional claims, repeated claims,
   finalize-at-E, incomplete batch rollback and lost claim flags on restore.
   Each must fail with exit 1, the exact assertion/invariant diagnostic and retained
   ITF evidence; syntax/backend failures must fail the runner rather than count.
-- [ ] Extend runner registries/counts and run auction profiles with TypeScript,
+- [x] Extend runner registries/counts and run auction profiles with TypeScript,
   seed `20261015`, 1,000 samples, depth 160 and the four witnesses. Run
   `QUINT_RESULTS_DIR="$(mktemp -d /private/tmp/auction-quint.XXXXXX)" npm run verify`
   plus all runner tests.
@@ -586,9 +607,9 @@ model currently excludes these; do not claim its old flight flag proves N1 fixed
   witness-producing cases independently of random exploration.
   Optional Apalache 0.62.1 requires an explicitly available server and remains a
   separately described bounded check, never a required all-auction theorem.
-- [ ] Write fresh evidence including model/source correspondence, bounds, seeds,
+- [x] Write fresh evidence including model/source correspondence, bounds, seeds,
   controls and exclusions.
-- [ ] Commit as `formal: model auction settlement and nested async effects`.
+- [x] Commit as `formal: model auction settlement and nested async effects`.
 
 ### Task 9: Ship the runnable suite slice and verify the whole change
 
@@ -603,29 +624,33 @@ helper. Reuse DCA journal behavior: persist signed bytes/hash before broadcast,
 attempted state before RPC, and resolve uncertain responses by original-hash lookup
 without resubmission. Do not persist non-test signing keys.
 
-- [ ] Add `TestAuctionDemoJournalNoRebroadcast`, `TestAuctionDemoRPCDeadline`,
+- [x] Add `TestAuctionDemoJournalNoRebroadcast`, `TestAuctionDemoRPCDeadline`,
   `TestAuctionDemoCleanupOwnedChild`, and shell relative-output-path tests before
   implementation. Assert one broadcast after a lost response, the original hash
   on lookup, unresolved outcomes halt the scenario, and unrelated processes survive.
-- [ ] Implement loopback-only test node setup, exact funding, commit/reveal helper,
+- [x] Implement loopback-only test node setup, exact funding, commit/reveal helper,
   immutable snapshot of generated salts for the current test run, bounded RPC
   deadlines, four scenarios and readable query receipts. Explain that the auction
   is capped, has no non-reveal penalty and provides no guaranteed service/fairness.
-- [ ] Verify default oversubscribed clearing, pause/top-up/budget/resume behavior,
+- [x] Verify default oversubscribed clearing, pause/top-up/budget/resume behavior,
   exact-window process restart and fixed-expiry refunds. Show application finality
   separately from host status. Claims must work after host pruning.
-- [ ] Run shell syntax checks and `bash scripts/native-auction-demo-test.sh`, then
+- [x] Run shell syntax checks and `bash scripts/native-auction-demo-test.sh`, then
   each scenario independently and `bash scripts/native-auction-demo.sh all`.
   Each run must identify source/artifact/config and exit all owned children.
-- [ ] Run fresh whole-branch Rust tests, format, strict clippy, all three artifact
+- [x] Run fresh whole-branch Rust tests, format, strict clippy, all three artifact
   builders, full pinned Go tests, both old/new gated network tests, Quint portable
   verification/runner tests, Node commitment vectors, and `git diff --check`.
   An opt-in test that skipped is not verified. Do not replace a blocked real test
   with a mock claim; preserve exact remaining gaps.
-- [ ] Conduct whole-change adversarial review over custody/rounding, authority,
+- [x] Conduct whole-change adversarial review over custody/rounding, authority,
   host accounting/rollback, retained-state restore and source/model correspondence.
-- [ ] Add regressions for scoped findings and verify fixes independently.
-- [ ] Commit documentation and receipt as `docs: ship native batch auction recovery examples`.
+- [x] Apply the whole-branch review's scoped publication, instrumentation naming
+  and status cleanup. These changes do not alter production behavior; existing
+  behavioral tests remain the regression coverage.
+- [ ] Complete one independent cleanup re-review; the controller will mark this
+  gate complete only after the actual verdict.
+- [x] Commit documentation and receipt as `docs: ship native batch auction recovery examples`.
 
 ## Acceptance, scope coverage and handoff
 
@@ -641,6 +666,10 @@ and artifact hashes for every real-host/network claim. Later jobs/waitsets/IBC
 remain on the approved roadmap and need their own scoped plans, not silent scope
 expansion here.
 
-The written specs are approved. This plan is awaiting review and execution-method
-confirmation; no implementation task is complete. No push, new PR, merge or public
-deployment is included without a subsequent request.
+Tasks 1–9 are implemented, verified and independently reviewed. The completed
+whole-branch adversarial review found no new runtime/custody correctness blocker;
+its publication cleanup and precise instrumentation naming are addressed here.
+One independent cleanup re-review remains pending, so Stage A's final handoff
+gate is still open. Evidence and deferred dispositions are recorded in the
+[verification receipt](../../reviews/2026-10-15-native-batch-auction-verification.md).
+No push, new PR, merge or public deployment is included without a subsequent request.

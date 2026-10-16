@@ -1,0 +1,19 @@
+Command: npm ci --cache /private/tmp/auction-formal.00Ky3u/npm-cache
+Exit: 0
+Repeated after final model verification to retain installation diagnostics; lockfile unchanged.
+
+added 79 packages, and audited 80 packages in 627ms
+
+4 packages are looking for funding
+  run `npm fund` for details
+
+2 high severity vulnerabilities
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   protobufjs@7.6.6 (postinstall: node scripts/postinstall)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.

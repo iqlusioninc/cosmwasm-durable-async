@@ -46,6 +46,7 @@ The workspace contains:
 | `native-async` | Native poll ABI, funding SDK, and persisted reference scheduler |
 | `native-fulfill-example` | Generated workflows exposed through the native poll and funding interfaces |
 | `native-dca` / `mock-exchange` | Finite scheduled trades and an immutable fixed-price local test fixture |
+| `native-batch-auction` | Capped sealed bids, bounded multi-block clearing, and retained principal claims |
 
 ## Checkpoints and restrictions
 
@@ -101,6 +102,16 @@ prerequisites and reuse instructions are in the tutorial and the
 [adapter guide](integration/wasmd/README.md#local-dca-scenarios). This uses only
 local test coins and deterministic test-only block permits; it is not a market,
 free-running cadence benchmark or production deployment.
+
+The [native batch auction tutorial](contracts/native-batch-auction/README.md)
+adds `bash scripts/native-auction-demo.sh all` and individual `happy`, `funding`,
+`restart`, `expiry` modes for
+uniform-price clearing, explicit gas recovery, exact-window process restart and
+fixed-expiry principal refunds. It uses local test coins, capped books, no
+non-reveal penalty and no guaranteed service or fairness. Run builders and host
+tests serially within a checkout: they share artifacts written in place. The
+[verification receipt](docs/reviews/2026-10-15-native-batch-auction-verification.md)
+separates source, real Wasm, reopen, process, snapshot and model evidence.
 
 The [native CosmWasm async design](docs/superpowers/specs/2026-10-11-native-cosmwasm-async-design.md) describes chain-managed tasks, block scheduling, prepaid gas, and durable wakeups. The [dynamic implementation plan](docs/superpowers/plans/2026-10-11-native-async-runtime.md) tracks implementation and acceptance gates; the design's full production validation criteria are not implied by unit tests.
 
